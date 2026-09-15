@@ -1,0 +1,18 @@
+# Глоссарий: термин=перевод (EN=RU)
+# Строки вида term=translation. Термин ищется целиком (регистр не важен).
+# Задаёт точные переводы для слов/фраз, которые у нейросети не всегда удачны.
+machine learning=машинное обучение
+neural network=нейронная сеть
+garbage collector=сборщик мусора
+page fault=сбой страницы
+interrupt handler=обработчик прерываний
+virtual memory=виртуальная память
+connection pool=пул соединений
+memory leak=утечка памяти
+buffer=буфер
+kernel=ядро
+scheduler=планировщик
+latency=задержка
+throughput=пропускная способность
+thread=поток
+process=процесс
