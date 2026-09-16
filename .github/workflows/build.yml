@@ -31,7 +31,7 @@ jobs:
         # скачиваем через официальный huggingface-cli.
         run: |
           pip install huggingface-hub
-          huggingface-cli download argos-translate/argos-translate translate-en_ru-1_9.argosmodel --local-dir dist --force-download
+          hf download argos-translate/argos-translate translate-en_ru-1_9.argosmodel --local-dir dist --force-download
 
       - name: Create tarball
         run: |
@@ -68,9 +68,7 @@ jobs:
         # скачиваем через официальный huggingface-cli.
         run: |
           pip install huggingface-hub
-          huggingface-cli download argos-translate/argos-translate translate-en_ru-1_9.argosmodel --local-dir dist --force-download
-
-      - name: Create zip archive
+          hug          hf download argos-translate/argos-translate translate-en_ru-1_9.argosmodel --local-dir dist --force-downloade: Create zip archive
         run: |
           cd dist
           Compress-Archive -Path OfflineTranslate.exe,translate-en_ru-1_9.argosmodel -DestinationPath OfflineTranslate-Windows.zip
