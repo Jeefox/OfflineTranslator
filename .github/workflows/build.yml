@@ -27,11 +27,21 @@ jobs:
         run: python build.py
 
       - name: Download model
-        # Модель (191 МБ) не коммитится в репозиторий (.gitignore),
+        # Модель не коммитится в репозиторий (.gitignore),
         # скачиваем через huggingface_hub напрямую (без hf-cli).
         run: |
           pip install huggingface-hub
-          python -c "from huggingface_hub import hf_hub_download; hf_hub_download(repo_id='argos-translate/argos-translate', filename='translate-en_ru-1_9.argosmodel', local_dir='dist', force_download=True)"
+          python -c "
+          from huggingface_hub import hf_hub_download
+          hf_hub_download(
+              repo_id='shethjenil/argostranslate',
+              filename='translate-en_ru.argosmodel',
+              local_dir='dist',
+              force_download=True
+          )
+          "
+          # Шаги упаковки ниже ожидают имя translate-en_ru-1_9.argosmodel
+          python -c "import os; os.replace('dist/translate-en_ru.argosmodel', 'dist/translate-en_ru-1_9.argosmodel')"
 
       - name: Create tarball
         run: |
@@ -64,11 +74,21 @@ jobs:
         run: python build.py
 
       - name: Download model
-        # Модель (191 МБ) не коммитится в репозиторий (.gitignore),
+        # Модель не коммитится в репозиторий (.gitignore),
         # скачиваем через huggingface_hub напрямую (без hf-cli).
         run: |
           pip install huggingface-hub
-          python -c "from huggingface_hub import hf_hub_download; hf_hub_download(repo_id='argos-translate/argos-translate', filename='translate-en_ru-1_9.argosmodel', local_dir='dist', force_download=True)"
+          python -c "
+          from huggingface_hub import hf_hub_download
+          hf_hub_download(
+              repo_id='shethjenil/argostranslate',
+              filename='translate-en_ru.argosmodel',
+              local_dir='dist',
+              force_download=True
+          )
+          "
+          # Шаги упаковки ниже ожидают имя translate-en_ru-1_9.argosmodel
+          python -c "import os; os.replace('dist/translate-en_ru.argosmodel', 'dist/translate-en_ru-1_9.argosmodel')"
 
       - name: Create zip archive
         run: |
