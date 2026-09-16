@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 """Сборка бинарников через PyInstaller."""
+import io
 import os
 import subprocess
 import sys
 import platform
+
+# Windows-консоль может использовать cp1252 — принудительно ставим UTF-8,
+# иначе print() с кириллицей/emoji упадёт с UnicodeEncodeError.
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 
 def check_deps():
     try:
