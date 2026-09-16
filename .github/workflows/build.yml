@@ -28,11 +28,10 @@ jobs:
 
       - name: Download model
         # Модель (191 МБ) не коммитится в репозиторий (.gitignore),
-        # поэтому скачиваем официальный файл с HF-хаба argos-translate.
+        # скачиваем через официальный huggingface-cli.
         run: |
-          curl -L --fail --retry 3 \
-            -o dist/translate-en_ru-1_9.argosmodel \
-            "https://huggingface.co/argos-translate/argos-translate/resolve/main/translate-en_ru-1_9.argosmodel?download=true"
+          pip install huggingface-hub
+          huggingface-cli download argos-translate/argos-translate translate-en_ru-1_9.argosmodel --local-dir dist --force-download
 
       - name: Create tarball
         run: |
@@ -66,9 +65,10 @@ jobs:
 
       - name: Download model
         # Модель (191 МБ) не коммитится в репозиторий (.gitignore),
-        # поэтому скачиваем официальный файл с HF-хаба argos-translate.
+        # скачиваем через официальный huggingface-cli.
         run: |
-          curl -L --fail --retry 3 -o dist/translate-en_ru-1_9.argosmodel "https://huggingface.co/argos-translate/argos-translate/resolve/main/translate-en_ru-1_9.argosmodel?download=true"
+          pip install huggingface-hub
+          huggingface-cli download argos-translate/argos-translate translate-en_ru-1_9.argosmodel --local-dir dist --force-download
 
       - name: Create zip archive
         run: |
