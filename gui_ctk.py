@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+import os
 import queue
 import re
 import threading
@@ -22,6 +23,20 @@ from pathlib import Path
 from tkinter import filedialog
 
 import customtkinter as ctk
+
+# Linux: бэкенд AppIndicator — нативное Gtk-меню, где работает правый
+# клик (x11-бэкенд pystray меню вообще не рендерит, _update_menu — no-op).
+# Гард по gi: без PyGObject принудительный бэкенд уронит import pystray
+# (импорт в __init__ пакета, вне try/except) — пусть pystray сам
+# откатится на x11, а трей-иконка отключится в _setup_tray.
+if os.name == "posix" and not os.environ.get("PYSTRAY_BACKEND"):
+    try:
+        import gi  # noqa: F401
+    except ImportError:
+        pass
+
+import pystray
+from PIL import Image, ImageDraw
 
 from hotkey_agent import HotkeyAgent
 from offline_translate import OfflineTranslator
@@ -176,6 +191,8 @@ class TranslatorGUI:
         self._hk_main: str | None = None         # «главная» клавиша (последняя)
         self._hk_main_held: bool = False         # зажат ли главный ключ
         self._hk_pending: str | None = None      # снимок комбинации при нажатии
+        # --- системный трей ---------------------------------------------- #
+        self.tray_icon = None                    # pystray.Icon (Linux: X11)
 
         self.hotkey_agent = HotkeyAgent(_TRANSLATOR, self.settings)
 
@@ -185,7 +202,18 @@ class TranslatorGUI:
         root.configure(fg_color=BASE, text_color=TEXT)
         root.bind("<Escape>", self._on_escape)
         root.bind("<Button-1>", self._on_popup_outside_click, add="+")
-        root.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.root.bind("<Control-x>", self._on_cut)
+        # Ctrl+Enter — немедленный перевод (без дебаунса), Ctrl+L — очистка.
+        # bind_all: срабатывает, откуда бы фокус ни был (поле, кнопки и т.д.).
+        # Имена событий — как требует Tk: <Control-Return>, <Control-l>.
+        self.root.bind_all("<Control-Return>", self._on_translate_now)
+        self.root.bind_all("<Control-l>", self._on_clear_hotkey)
+        # Ctrl+C — только в поле перевода (bind, не bind_all: не глушим
+        # системный Copy в остальных местах). Ctrl+, — настройки.
+        self.root.bind("<Control-c>", self._on_copy_hotkey)
+        self.root.bind_all("<Control-comma>", self._on_open_settings_hotkey)
+        # Крестик — сворачивание в трей (полный выход — из меню трея).
+        root.protocol("WM_DELETE_WINDOW", self._on_window_close)
 
         self._build()
         self._load_wordlist()
@@ -193,13 +221,123 @@ class TranslatorGUI:
         self.in_text.bind("<<Modified>>", self._on_text_modified)
         self.in_text.bind("<KeyRelease>", self._on_key_release)
         self.in_text.bind("<FocusOut>", lambda _e: self._hide_popup())
+        # Ctrl+A — отдельно на каждом поле (не bind_all): выделяется
+        # только то, по которому нажата комбинация.
+        self.in_text.bind("<Control-a>", self._on_select_all, add="+")
+        self.out_text.bind("<Control-a>", self._on_select_all, add="+")
         self.hotkey_agent.start()
         root.after(100, self._poll_results)
+        self._setup_tray()
 
     def _on_close(self) -> None:
-        """Единая точка закрытия: остановка агента + деструкция окна."""
+        """Единая точка закрытия: агент + трей-иконка + деструкция окна.
+
+        Стоп трея — в фоновом потоке: pystray.stop() может ждать
+        завершение setup-потока (до SETUP_THREAD_TIMEOUT), и UI
+        на это время не должен застревать."""
         self.hotkey_agent.stop()
+        icon = self.tray_icon
+        self.tray_icon = None
+        if icon is not None:
+            threading.Thread(
+                target=self._stop_tray, args=(icon,), daemon=True
+            ).start()
         self.root.destroy()
+
+    @staticmethod
+    def _stop_tray(icon: "pystray.Icon") -> None:
+        try:
+            icon.stop()
+        except Exception:  # noqa: BLE001 — трей уже остановлен
+            pass
+
+    # ------------------------------------------------------------------ #
+    #  Системный трей (Linux/X11 через pystray)                          #
+    # ------------------------------------------------------------------ #
+    def _create_icon(self) -> "Image.Image":
+        """Создаёт иконку программно (64x64): акцентный круг + буква T."""
+        size = 64
+        image = Image.new("RGB", (size, size), color=(88, 101, 126))
+        draw = ImageDraw.Draw(image)
+        draw.ellipse([10, 10, 54, 54], fill=(137, 180, 250))
+        draw.text((24, 18), "T", fill=(30, 30, 46))
+        return image
+
+    def _setup_tray(self) -> None:
+        """Инициализирует системный трей (отдельный поток pystray).
+
+        Если трей недоступен (нет системного трей-хоста), GUI продолжает
+        работать без иконки — ошибки только логируются."""
+        try:
+            menu = pystray.Menu(
+                pystray.MenuItem("Открыть", lambda icon, item: self.root.after(0, self._on_tray_show), default=True),
+                pystray.MenuItem("Настройки", self._on_tray_settings),
+                pystray.Menu.SEPARATOR,
+                pystray.MenuItem("Выйти", self._on_tray_quit),
+            )
+            self.tray_icon = pystray.Icon(
+                "OfflineTranslate", self._create_icon(), "Offline Translate", menu,
+                on_click=self._on_tray_click,
+            )
+            # Не run_detached(): он поднимает non-daemon-поток, и при выходе
+            # из процесса Python ждёт его в threading._shutdown. Свой
+            # daemon-поток: при выходе (в т.ч. в тестах) не блокирует.
+            threading.Thread(
+                target=self.tray_icon.run, daemon=True, name="tray"
+            ).start()
+        except Exception:  # noqa: BLE001 — нет X-трея/прав
+            import logging
+            logging.getLogger("gui").exception("Трей недоступен — работа без иконки")
+            self.tray_icon = None
+
+    def _on_tray_click(self, icon, button, pressed):
+        print(f"DEBUG: tray click button={button} pressed={pressed}")
+        if not pressed:
+            return
+        if button == pystray.Button.LEFT:
+            print("DEBUG: opening window")
+            self.root.after(0, self._on_tray_show)
+
+    def _on_tray_show(self, icon=None, item=None) -> None:
+        """Клик по трею «Открыть»: показать окно.
+
+        Вызывается из потока pystray — через after(0) в главный поток
+        (Tk не потокобезопасен)."""
+        self.root.after(0, self._show_from_tray)
+
+    def _show_from_tray(self) -> None:
+        if self.settings_window is not None and self.settings_window.winfo_exists():
+            self._close_settings()
+        self.root.deiconify()
+        self.root.lift()
+        self.root.focus_force()
+
+    def _on_tray_settings(self, icon=None, item=None) -> None:
+        """Открыть настройки из трея."""
+        def _do_settings():
+            if not self.root.winfo_viewable():
+                self.root.deiconify()
+                self.root.lift()
+                # Ждём пока окно появится
+                self.root.after(300, self._open_settings)
+            else:
+                self._open_settings()
+        self.root.after(0, _do_settings)
+
+    def _on_tray_quit(self, icon=None, item=None) -> None:
+        """Меню «Выйти»: полный выход (стоп трея сделаем в _on_close)."""
+        self.root.after(0, self._on_close)
+
+    def _on_window_close(self) -> None:
+        """Крестик — сворачивание в трей (полный выход — из меню трея)."""
+        self.root.withdraw()
+        import shutil
+        import subprocess
+        if shutil.which("notify-send"):
+            subprocess.run(
+                ["notify-send", "Offline Translate", "Свёрнуто в трей"],
+                check=False,
+            )
 
     def _load_wordlist(self) -> None:
         """Загружает wordlist.txt (одно слово на строку).
@@ -761,6 +899,60 @@ class TranslatorGUI:
         self.root.clipboard_append(text)
         self._set_status("Скопировано в буфер обмена", GREEN)
 
+    def _on_select_all(self, event) -> str:
+        """Ctrl+A: выделяет всё в том поле, по которому нажата
+        комбинация (bind на каждом поле, не bind_all)."""
+        widget = event.widget
+        if widget == self.in_text._textbox or "in_text" in str(widget):
+            self.in_text.tag_add('sel', '1.0', 'end')
+        elif widget == self.out_text._textbox or "out_text" in str(widget):
+            self.out_text.tag_add('sel', '1.0', 'end')
+        return "break"
+
+    def _on_cut(self, event) -> None:
+        focused = self.root.focus_get()
+        if str(self.in_text) in str(focused):
+            try:
+                selected = self.in_text.get('sel.first', 'sel.last')
+                self.in_text.delete('sel.first', 'sel.last')
+                import pyperclip
+                pyperclip.copy(selected)
+            except:
+                pass
+
+    def _on_translate_now(self, event) -> str:
+        """Ctrl+Enter: немедленный перевод, без ожидания дебаунса."""
+        if self._timer_id is not None:
+            self.root.after_cancel(self._timer_id)
+            self._timer_id = None
+        self._start_translate()
+        # "break": не вставляем перенос строки в поле ввода.
+        return "break"
+
+    def _on_clear_hotkey(self, event) -> str:
+        """Ctrl+L: очистка полей (тот же код, что кнопка Clear)."""
+        self._on_clear()
+        # "break": не вставляем букву 'l' в поле ввода.
+        return "break"
+
+    def _on_copy_hotkey(self, event) -> str | None:
+        """Ctrl+C: копирует перевод, но только если фокус в out_text.
+
+        bind (не bind_all) на root: биндинг топ-левела входит в bindtags
+        всех дочерних виджетов, а для других окон не срабатывает."""
+        focused = self.root.focus_get()
+        if str(self.out_text) in str(focused):
+            import pyperclip
+            pyperclip.copy(self.out_text.get("1.0", "end-1c"))
+            self._set_status("Перевод скопирован")
+            return "break"
+        # Фокус не в out_text — не перехватываем: системный Copy работает.
+
+    def _on_open_settings_hotkey(self, event) -> str:
+        """Ctrl+, — открыть окно настроек."""
+        self._open_settings()
+        return "break"
+
     # ------------------------------------------------------------------ #
     #  Настройки                                                         #
     # ------------------------------------------------------------------ #
@@ -768,14 +960,19 @@ class TranslatorGUI:
         """Диалог настроек: поля под каждый параметр + Сохранить/Отмена."""
         win = ctk.CTkToplevel(self.root)
         win.title("Настройки")
-        win.geometry("580x540")
+        win.geometry("580x730")
         win.resizable(False, False)
-        win.attributes("-topmost", True)
+        # transient: диалог привязан к root — не становится выше других
+        # окон (без -topmost), а сворачивается/прикрывается вместе с ним.
         win.transient(self.root)
         win.configure(fg_color=BASE)
         win.update_idletasks()
         self.settings_window = win
         win.protocol("WM_DELETE_WINDOW", self._close_settings)
+        # Escape закрывает диалог (bind на toplevel: bind на root сюда
+        # не доходит). Во время записи хоткея Escape означает «отменить
+        # запись» (_hk_on_key) — диалог не закрываем.
+        win.bind("<Escape>", self._on_settings_escape)
 
         entries: dict[str, ctk.CTkEntry] = {}
         row_font = ctk.CTkFont(size=13)
@@ -801,8 +998,20 @@ class TranslatorGUI:
             "model_path": "Путь к модели; пусто = автоопределение. Применяется после перезапуска.",
         }
 
-        body = ctk.CTkFrame(win, fg_color="transparent")
-        body.grid(sticky="nsew", padx=16, pady=(12, 4))
+        scroll_frame = ctk.CTkScrollableFrame(
+            win,
+            width=500,
+            height=580,
+            fg_color="transparent",
+            scrollbar_button_color="#313244",
+            scrollbar_button_hover_color="#45475a",
+        )
+        scroll_frame.pack(fill="both", expand=True, padx=20, pady=10)
+        # Внутренний фрейм: все виджеты размещаем здесь, а не в
+        # CTkScrollableFrame (pack/sticky в самом scroll-фрейме не
+        # поддерживается).
+        body = ctk.CTkFrame(scroll_frame, fg_color="transparent")
+        body.pack(fill="both", expand=True)
         body.grid_columnconfigure(0, weight=0)
         body.grid_columnconfigure(1, weight=1)
         body.grid_columnconfigure(2, weight=0)   # кнопка «Обзор...»
@@ -901,8 +1110,35 @@ class TranslatorGUI:
                        sticky="w", padx=2, pady=(0, 6))
                 row += 1
 
+        # --- Секция: горячие клавиши (не редактируемый список) ---- #
+        ctk.CTkLabel(
+            body, text="Горячие клавиши", anchor="w",
+            font=ctk.CTkFont(size=13, weight="bold"), text_color=TEXT,
+        ).grid(row=row, column=0, columnspan=3, sticky="w", padx=2, pady=(12, 4))
+        row += 1
+
+        hk_mono_font = ctk.CTkFont(size=12, family="monospace")
+        for combo, desc in [
+            ("Ctrl+Enter", "Перевести текст"),
+            ("Ctrl+C", "Копировать перевод (в поле перевода)"),
+            ("Ctrl+X", "Вырезать текст (в поле ввода)"),
+            ("Ctrl+A", "Выделить всё"),
+            ("Ctrl+L", "Очистить поля"),
+            ("Ctrl+,", "Открыть настройки"),
+            ("Escape", "Закрыть настройки"),
+        ]:
+            ctk.CTkLabel(
+                body, text=combo, anchor="w", width=90,
+                font=hk_mono_font, text_color=ACCENT,
+            ).grid(row=row, column=0, sticky="w", padx=(8, 6), pady=1)
+            ctk.CTkLabel(
+                body, text=desc, anchor="w",
+                font=ctk.CTkFont(size=12), text_color=MUTED,
+            ).grid(row=row, column=1, sticky="w", pady=1)
+            row += 1
+
         btns = ctk.CTkFrame(win, fg_color="transparent")
-        btns.grid(sticky="ew", padx=16, pady=(8, 14))
+        btns.pack(side="bottom", fill="x", padx=16, pady=(8, 14))
         btns.grid_columnconfigure(0, weight=1)
         btns.grid_columnconfigure(1, weight=1)
 
@@ -918,6 +1154,18 @@ class TranslatorGUI:
         ).grid(row=0, column=1, sticky="ew", padx=(6, 0))
 
         win.grab_set()
+
+    def _on_settings_escape(self, _event: tk.Event) -> str:
+        """Escape в окне настроек: закрыть диалог.
+
+        Во время записи хоткея Escape означает «отменить запись»
+        (_hk_on_key); не закрываем диалог, а лишь останавливаем запись.
+        "break": не даём событию дойти до root-биндинга _on_escape."""
+        if self._recording:
+            self._stop_hotkey_recording()
+        else:
+            self._close_settings()
+        return "break"
 
     def _close_settings(self) -> None:
         """Закрытие диалога (кнопка X): останавливает запись хоткея."""

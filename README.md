@@ -199,6 +199,37 @@ OfflineTranslate/
 └── README.md
 ```
 
+## Сборка бинарников
+
+Проект собирается в единый исполняемый файл через PyInstaller.
+Модель распространяется отдельно — положите файл `*.argosmodel`
+(например, `translate-en_ru-1_9.argosmodel`) в ту же папку, что и
+бинарник: программа найдёт её автоматически.
+
+### Требования
+
+- Python 3.12+
+- `pip install -r requirements.txt pyinstaller`
+
+### Сборка
+
+```bash
+python build.py
+```
+
+Результат появится в `dist/`: `dist/OfflineTranslate.exe` (Windows)
+или `dist/OfflineTranslate` (Linux). После сборки скопируйте
+бинарник вместе с файлом модели в одну папку:
+
+```
+dist/
+├── OfflineTranslate.exe      # собранный бинарник
+└── translate-en_ru-1_9.argosmodel   # модель, кладётся рядом вручную
+```
+
+`build.spec` описывает сборку: входная точка `gui_ctk.py`,
+встраиваются `glossary.txt` и `wordlist.txt`, модель не включается.
+
 ## Лицензия
 
 Argo Translate — MIT. Модель `en→ru` — обучена Argo Open Technologies,

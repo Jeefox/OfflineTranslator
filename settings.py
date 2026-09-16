@@ -14,7 +14,8 @@ pynput (иначе используется дефолт + warning), числа 
 
 ``model_path``:
   - ``None`` / пустая строка — модель ищется автоматически:
-    в PyInstaller (``sys._MEIPASS``) либо рядом с проектом (dev).
+    рядом с исполняемым файлом/проектом, либо в PyInstaller
+    (``sys._MEIPASS``).
   - строка — абсолютный/относительный путь к ``.argosmodel``.
 """
 from __future__ import annotations
@@ -80,13 +81,30 @@ def _default_config_path() -> Path:
     return Path.home() / ".config" / "offline_translate" / "config.json"
 
 
+def _find_model_near_exe() -> str | None:
+    """Ищет .argosmodel рядом с исполняемым файлом (для PyInstaller сборки)."""
+    if getattr(sys, "frozen", False):
+        base_path = os.path.dirname(sys.executable)
+    else:
+        base_path = os.path.dirname(os.path.abspath(__file__))
+
+    for f in os.listdir(base_path):
+        if f.endswith(".argosmodel"):
+            return os.path.join(base_path, f)
+    return None
+
+
 def _default_model_path() -> Path:
     """Автоопределение пути к модели.
 
     Порядок:
-      1. PyInstaller (``sys._MEIPASS``) — модель, встроенная в бинарник;
-      2. dev-режим — рядом с этим файлом (корень проекта).
+      1. Рядом с исполняемым файлом (PyInstaller) или рядом с проектом (dev)
+         — пользователь кладёт ``.argosmodel`` рядом с бинарником;
+      2. PyInstaller (``sys._MEIPASS``) — модель, встроенная в бинарник.
     """
+    near_exe = _find_model_near_exe()
+    if near_exe:
+        return Path(near_exe)
     meipass = getattr(sys, "_MEIPASS", None)
     if meipass:
         candidate = Path(meipass) / MODEL_FILENAME

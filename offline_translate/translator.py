@@ -1,47 +1,119 @@
-"""Оффлайн переводчик EN -> RU на лёгкой предобученной нейросети (Argo Translate).
+"""Переводчик на базе CTranslate2 + SentencePiece.
 
-Модель — локальный файл ``.argosmodel`` (по умолчанию
-``translate-en_ru-1_9.argosmodel``). Он ставится один раз через
-``package.install_from_path(...)`` и после этого перевод работает
-полностью оффлайн, без сети.
+Argo Translate / Stanza / Torch не используются: перевод идёт напрямую через
+CTranslate2, токенизация — SentencePiece. Модель — ``.argosmodel`` (zip с
+``model/model.bin`` + ``sentencepiece.model``) либо распакованная папка.
 
-Путь к модели настраивается:
-  - аргументом ``OfflineTranslator(model_path=...)``;
-  - ключом ``model_path`` в config.json (см. ``settings.get_model_path``);
-  - при ``None`` — автоопределение (PyInstaller ``_MEIPASS`` / dev-путь)
-    и, если модель уже установлена в данных Argos, установка вообще
-    пропускается.
-
-Слои:
-1. Глоссарий (glossary.txt) — точные переводы слов и фраз (приоритет над NN).
-2. Предобученная нейросеть Argo Translate (локальная модель, оффлайн).
-
-Режимы:
-- слово / фраза / короткое предложение — глоссарий (если есть), иначе NN;
-- длинный технический текст — по абзацам/предложениям.
+Публичный интерфейс приложения — ``OfflineTranslator`` (глоссарий,
+``Translation``, стриминг) поверх низкоуровневого ``Translator``.
 """
 from __future__ import annotations
 
-import logging
+import os
 import re
+import shutil
+import tempfile
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from argostranslate import package, translate
-
-class _SuppressMwtNotice(logging.Filter):
-    """Режет безобидное уведомление Stanza SBD про добавление mwt."""
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        return "expects mwt, which has been added" not in record.getMessage()
+import ctranslate2
+import sentencepiece as spm
 
 
-# Stanza (модуль SBD внутри Argo) при первом переводе выводит в stderr
-# "Language en package default expects mwt, which has been added" и при этом
-# сбрасывает уровень своего логгера на WARNING — поэтому глушим через Filter,
-# который не перебивается сменой уровня.
-logging.getLogger("stanza").addFilter(_SuppressMwtNotice())
+def _split_sentences(text: str, max_len: int = 500) -> list[str]:
+    if len(text) <= max_len:
+        return [text]
+    parts = re.split(r'(?<=[.!?])\s+|\n+', text)
+    chunks, current = [], ""
+    for part in parts:
+        if len(current) + len(part) + 1 > max_len:
+            if current:
+                chunks.append(current.strip())
+            current = part
+        else:
+            current = (current + " " + part).strip() if current else part
+    if current:
+        chunks.append(current.strip())
+    return chunks if chunks else [text]
 
+
+class Translator:
+    def __init__(self, model_path: str | Path):
+        self._model_path = Path(model_path)
+        self._tmp_dir = None
+        self._model_dir = None
+        self._src_sp = None
+        self._tgt_sp = None
+        self._translator = None
+        self._load()
+
+    def _load(self):
+        if self._model_path.suffix == '.argosmodel':
+            self._tmp_dir = tempfile.mkdtemp(prefix='offline_translate_')
+            with zipfile.ZipFile(self._model_path, 'r') as z:
+                z.extractall(self._tmp_dir)
+            self._model_dir = self._tmp_dir
+        else:
+            self._model_dir = str(self._model_path)
+
+        sp_path = os.path.join(self._model_dir, 'sentencepiece.model')
+        if not os.path.exists(sp_path):
+            for root, _, files in os.walk(self._model_dir):
+                if 'sentencepiece.model' in files:
+                    sp_path = os.path.join(root, 'sentencepiece.model')
+                    break
+        if not os.path.exists(sp_path):
+            raise FileNotFoundError(f"sentencepiece.model не найден в {self._model_dir}")
+
+        # Конструктор SentencePieceProcessor не принимает путь: модель
+        # загружается через .load().
+        self._src_sp = spm.SentencePieceProcessor()
+        self._src_sp.load(sp_path)
+        self._tgt_sp = spm.SentencePieceProcessor()
+        self._tgt_sp.load(sp_path)
+
+        ct_model_path = os.path.join(self._model_dir, 'model')
+        if not os.path.isdir(ct_model_path):
+            for root, _, files in os.walk(self._model_dir):
+                if 'model.bin' in files:
+                    ct_model_path = root
+                    break
+        if not os.path.isdir(ct_model_path):
+            raise FileNotFoundError(f"CTranslate2 модель не найдена в {self._model_dir}")
+
+        self._translator = ctranslate2.Translator(
+            ct_model_path, device='cpu',
+            inter_threads=1, intra_threads=4, compute_type='default'
+        )
+
+    def translate(self, text: str) -> str:
+        if not text.strip():
+            return ""
+        sentences = _split_sentences(text, max_len=1000)
+        parts = []
+        for sentence in sentences:
+            tokens = self._src_sp.encode(sentence, out_type=str)
+            results = self._translator.translate_batch([tokens])
+            translated_tokens = results[0].hypotheses[0]
+            parts.append(self._tgt_sp.decode(translated_tokens))
+        return ' '.join(parts)
+
+    def close(self) -> None:
+        if self._tmp_dir and os.path.exists(self._tmp_dir):
+            shutil.rmtree(self._tmp_dir, ignore_errors=True)
+            self._tmp_dir = None
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+# ---------------------------------------------------------------------- #
+#  Совместимый слой приложения (глоссарий + стриминг)                    #
+# ---------------------------------------------------------------------- #
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 GLOSSARY_PATH = PROJECT_ROOT / "glossary.txt"
 
@@ -57,7 +129,7 @@ class Translation:
 
 
 class OfflineTranslator:
-    """Полностью оффлайнный переводчик English -> Russian."""
+    """Оффлайнный переводчик EN -> RU: глоссарий + CTranslate2-нейросеть."""
 
     def __init__(
         self,
@@ -66,59 +138,41 @@ class OfflineTranslator:
     ):
         self.glossary_path = Path(glossary_path)
         self._glossary: dict[str, str] = self._load_glossary(self.glossary_path)
-        # Путь к .argosmodel: None означает «автоопределение» (см.
-        # _resolve_model_path) и пропуск установки, если модель уже есть.
         self._model_path = Path(model_path) if model_path else None
-        self._model_ready = False
+        self._engine: Translator | None = None
 
     # ------------------------------------------------------------------ #
-    #  Модель: локальная установка из .argosmodel (без сети)             #
+    #  Модель (ленивая загрузка)                                         #
     # ------------------------------------------------------------------ #
     def _resolve_model_path(self) -> Path:
-        """Финальный путь к .argosmodel (аргумент -> settings -> авто)."""
         if self._model_path is not None:
             return self._model_path
         # Ленивый импорт: settings не тянет translator, цикла нет.
         from settings import Settings
         return Settings().get_model_path()
 
-    @staticmethod
-    def _package_installed() -> bool:
-        """Есть ли уже установленная en->ru модель в данных Argos."""
-        try:
-            installed = package.get_installed_packages()
-        except Exception:
-            return False
-        return any(
-            getattr(p, "from_code", None) == "en"
-            and getattr(p, "to_code", None) == "ru"
-            for p in installed
-        )
-
     def install_model(self) -> None:
-        """Ставит модель из локального ``.argosmodel`` (идемпотентно, без сети)."""
-        if self._model_ready or self._package_installed():
-            self._model_ready = True
-            return
-        model_file = self._resolve_model_path()
-        if not model_file.exists():
-            raise FileNotFoundError(
-                f"Локальная модель не найдена: {model_file}. "
-                "Укажите путь в настройках (model_path) или положите "
-                ".argosmodel в ожидаемое место."
-            )
-        package.install_from_path(str(model_file))
-        self._model_ready = True
+        if self._engine is None:
+            model_file = self._resolve_model_path()
+            if not model_file.exists():
+                raise FileNotFoundError(
+                    f"Локальная модель не найдена: {model_file}. "
+                    "Укажите путь в настройках (model_path) или положите "
+                    ".argosmodel в ожидаемое место."
+                )
+            self._engine = Translator(model_file)
 
     def _ensure_ready(self) -> None:
-        if not self._model_ready:
+        if self._engine is None:
             self.install_model()
 
     def _nn(self, text: str) -> str:
-        return translate.translate(text, "en", "ru").strip()
+        self._ensure_ready()
+        assert self._engine is not None
+        return self._engine.translate(text)
 
     # ------------------------------------------------------------------ #
-    #  Глоссарий (слова и фразы)                                          #
+    #  Глоссарий (слова и фразы)                                         #
     # ------------------------------------------------------------------ #
     @staticmethod
     def _load_glossary(path: Path) -> dict[str, str]:
@@ -149,7 +203,7 @@ class OfflineTranslator:
         return self._glossary.get(text.strip().lower())
 
     # ------------------------------------------------------------------ #
-    #  Перевод                                                            #
+    #  Перевод                                                           #
     # ------------------------------------------------------------------ #
     def translate(self, text: str) -> Translation:
         """Слово, фраза или короткое предложение."""
@@ -159,7 +213,6 @@ class OfflineTranslator:
         gl = self._glossary_lookup(text)
         if gl is not None:
             return Translation(gl, "glossary")
-        self._ensure_ready()
         return Translation(self._nn(text), "nn")
 
     def translate_sentence(self, sentence: str) -> Translation:
@@ -167,14 +220,12 @@ class OfflineTranslator:
         sentence = sentence.strip()
         if not sentence:
             return Translation("", "nn")
-        self._ensure_ready()
         return Translation(self._nn(sentence), "nn")
 
     def translate_text(self, text: str) -> str:
         """Длинный текст: абзац за абзацем, предложение за предложением.
 
-        Последовательно, т.к. движок CTranslate2 не потокобезопасен.
-        """
+        Последовательно, т.к. движок CTranslate2 не потокобезопасен."""
         paragraphs = [p for p in text.split("\n\n") if p.strip()]
         return "\n\n".join(self._translate_paragraph(p) for p in paragraphs)
 
@@ -184,8 +235,7 @@ class OfflineTranslator:
     def _incremental_plan(self, text: str) -> list[list[str]]:
         """Разбивает текст на абзацы -> «единицы перевода».
 
-        Каждая единица — точная строка, которую пошлём в NN (byte-identical
-        к тому, что использует ``translate_text``): абзац из одного
+        Каждая единица — точная строка, которую пошлём в NN: абзац из одного
         предложения → весь (обрезанный) абзац; иначе — по одному предложению.
         Возвращает список абзацев, каждый — список единиц."""
         paragraphs = [p for p in text.split("\n\n") if p.strip()]
@@ -268,16 +318,10 @@ class OfflineTranslator:
 
         Разбивает текст на абзацы/предложения (как ``translate_text``),
         переводит по одному предложению и после каждого вызывает
-        ``callback(translated_so_far, done, total)``:
-
-        - ``translated_so_far`` — накопленный перевод в финальном виде
-          (абзацы через ``\\n\\n``, предложения внутри абзаца — через
-          пробел), но только по завершённым предложениям;
-        - ``done`` / ``total`` — сколько предложений готово / всего.
+        ``callback(translated_so_far, done, total)``.
 
         Возвращает финальный перевод. ``callback`` вызывается в том
-        потоке, где вызван метод (например, worker-потоке GUI) — перевод
-        UI на главный поток ответственность вызывающего.
+        потоке, где вызван метод (например, worker-потоке GUI).
         """
         paragraphs = [p for p in text.split("\n\n") if p.strip()]
         if not paragraphs:
@@ -326,3 +370,10 @@ class OfflineTranslator:
     def _split_sentences(para: str) -> list[str]:
         parts = _SENT_RE.split(" " + " ".join(para.split()))
         return [p.strip() for p in parts if p.strip()]
+
+    def __del__(self):
+        try:
+            if self._engine is not None:
+                self._engine.close()
+        except Exception:  # noqa: BLE001
+            pass
