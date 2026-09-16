@@ -32,7 +32,7 @@ jobs:
         run: |
           curl -L --fail --retry 3 \
             -o dist/translate-en_ru-1_9.argosmodel \
-            https://huggingface.co/argos-translate/argos-translate/resolve/main/translate-en_ru-1_9.argosmodel
+            "https://huggingface.co/argos-translate/argos-translate/resolve/main/translate-en_ru-1_9.argosmodel?download=true"
 
       - name: Create tarball
         run: |
@@ -68,9 +68,7 @@ jobs:
         # Модель (191 МБ) не коммитится в репозиторий (.gitignore),
         # поэтому скачиваем официальный файл с HF-хаба argos-translate.
         run: |
-          curl -L --fail --retry 3 `
-            -o dist/translate-en_ru-1_9.argosmodel `
-            https://huggingface.co/argos-translate/argos-translate/resolve/main/translate-en_ru-1_9.argosmodel
+          curl -L --fail --retry 3 -o dist/translate-en_ru-1_9.argosmodel "https://huggingface.co/argos-translate/argos-translate/resolve/main/translate-en_ru-1_9.argosmodel?download=true"
 
       - name: Create zip archive
         run: |
