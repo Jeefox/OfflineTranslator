@@ -105,8 +105,55 @@ jobs:
           name: OfflineTranslate-Windows
           path: dist/OfflineTranslate-Windows.zip
 
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Build with PyInstaller
+        run: python build.py
+
+      - name: Download model
+        # Модель не коммитится в репозиторий (.gitignore),
+        # скачиваем через huggingface_hub напрямую (без hf-cli).
+        run: |
+          pip install huggingface-hub
+          python -c "
+          from huggingface_hub import hf_hub_download
+          hf_hub_download(
+              repo_id='shethjenil/argostranslate',
+              filename='translate-en_ru.argosmodel',
+              local_dir='dist',
+              force_download=True
+          )
+          "
+          # Шаги упаковки ниже ожидают имя translate-en_ru-1_9.argosmodel
+          python -c "import os; os.replace('dist/translate-en_ru.argosmodel', 'dist/translate-en_ru-1_9.argosmodel')"
+
+      - name: Create tarball
+        run: |
+          cd dist
+          tar -czf OfflineTranslate-macOS.tar.gz OfflineTranslate translate-en_ru-1_9.argosmodel
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OfflineTranslate-macOS
+          path: dist/OfflineTranslate-macOS.tar.gz
+
   release:
-    needs: [build-linux, build-windows]
+    needs: [build-linux, build-windows, build-macos]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     steps:
@@ -120,6 +167,12 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: OfflineTranslate-Windows
+          path: ./artifacts
+
+      - name: Download macOS artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: OfflineTranslate-macOS
           path: ./artifacts
 
       - name: Create GitHub Release
