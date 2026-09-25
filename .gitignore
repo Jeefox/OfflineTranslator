@@ -1,1 +1,19 @@
-Nothing needs to be added to .gitignore since the changes only include source code files (.py) and documentation/config files (.md, .json).
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+*.spec
+
+# Виртуальное окружение
+.venv/
+env/
+
+# Кэш моделей
+cache/
+
+# IDE
+.idea/
+.vscode/
+*.diff
