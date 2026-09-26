@@ -3,3 +3,7 @@ transformers>=4.36.0
 torch>=2.1.0
 sentencepiece>=0.1.99
 sacremoses>=0.1.1
+# Этап 6 (GGUF-POC): локальный runtime llama.cpp для LlamaCppBackend (CPU).
+# Опциональная зависимость: Marian-путь и остальное приложение работают
+# без неё (llama_cpp импортируется лениво, в load() бэкенда).
+llama-cpp-python>=0.3.0
