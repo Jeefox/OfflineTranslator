@@ -12,6 +12,7 @@ env/
 
 # Кэш моделей
 cache/
+model_cache/
 
 # IDE
 .idea/

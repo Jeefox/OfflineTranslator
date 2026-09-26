@@ -1,0 +1,200 @@
+{"id":"en001","direction":"en-ru","source":"Hello, world!","category":"basic","reference":"Привет, мир!","exact":true}
+{"id":"en002","direction":"en-ru","source":"Good morning.","category":"basic","reference":"Доброе утро.","exact":true}
+{"id":"en003","direction":"en-ru","source":"Thank you.","category":"basic","reference":"Спасибо.","exact":true}
+{"id":"en004","direction":"en-ru","source":"Yes.","category":"basic","reference":"Да.","exact":true}
+{"id":"en005","direction":"en-ru","source":"No.","category":"basic","reference":"Нет.","exact":true}
+{"id":"en006","direction":"en-ru","source":"How are you?","category":"basic"}
+{"id":"en007","direction":"en-ru","source":"I live in Moscow.","category":"basic"}
+{"id":"en008","direction":"en-ru","source":"The weather is good today.","category":"basic"}
+{"id":"en009","direction":"en-ru","source":"I want to buy bread.","category":"basic"}
+{"id":"en010","direction":"en-ru","source":"She reads a book.","category":"basic"}
+{"id":"en011","direction":"en-ru","source":"Hey, what's up?","category":"conversational"}
+{"id":"en012","direction":"en-ru","source":"I'm doing fine, thanks for asking.","category":"conversational"}
+{"id":"en013","direction":"en-ru","source":"See you tomorrow!","category":"conversational"}
+{"id":"en014","direction":"en-ru","source":"Sorry, I'm running late.","category":"conversational"}
+{"id":"en015","direction":"en-ru","source":"That sounds great to me.","category":"conversational"}
+{"id":"en016","direction":"en-ru","source":"What do you think about it?","category":"conversational"}
+{"id":"en017","direction":"en-ru","source":"It was really nice meeting you.","category":"conversational"}
+{"id":"en018","direction":"en-ru","source":"Let's grab a coffee later.","category":"conversational"}
+{"id":"en019","direction":"en-ru","source":"I can't make it tonight.","category":"conversational"}
+{"id":"en020","direction":"en-ru","source":"No worries, it's all good.","category":"conversational"}
+{"id":"en021","direction":"en-ru","source":"Add a new method to the UserService class.","category":"technical"}
+{"id":"en022","direction":"en-ru","source":"The build failed due to a missing dependency.","category":"technical"}
+{"id":"en023","direction":"en-ru","source":"Refactor this function to improve readability.","category":"technical"}
+{"id":"en024","direction":"en-ru","source":"Handle the exception and log the error.","category":"technical"}
+{"id":"en025","direction":"en-ru","source":"The database connection timed out.","category":"technical"}
+{"id":"en026","direction":"en-ru","source":"Write unit tests for the payment module.","category":"technical"}
+{"id":"en027","direction":"en-ru","source":"Increase the thread pool size to sixteen.","category":"technical"}
+{"id":"en028","direction":"en-ru","source":"The garbage collector is consuming too much CPU.","category":"technical"}
+{"id":"en029","direction":"en-ru","source":"Commit the changes and push the branch.","category":"technical"}
+{"id":"en030","direction":"en-ru","source":"The memory leak occurs after the cache is disabled.","category":"technical"}
+{"id":"en031","direction":"en-ru","source":"Common Service Expression is a web service standard.","category":"terminology"}
+{"id":"en032","direction":"en-ru","source":"The package manager resolves transitive dependencies.","category":"terminology"}
+{"id":"en033","direction":"en-ru","source":"Use a mutex to protect the shared resource.","category":"terminology"}
+{"id":"en034","direction":"en-ru","source":"The load balancer distributes requests across nodes.","category":"terminology"}
+{"id":"en035","direction":"en-ru","source":"Enable strict mode for the linter.","category":"terminology"}
+{"id":"en036","direction":"en-ru","source":"The API returns a non-recoverable error code.","category":"terminology"}
+{"id":"en037","direction":"en-ru","source":"Use dependency injection instead of a service locator.","category":"terminology"}
+{"id":"en038","direction":"en-ru","source":"The container runtime schedules the pod on the node.","category":"terminology"}
+{"id":"en039","direction":"en-ru","source":"Google announced a new version of Android.","category":"names","reference":"Google представила новую версию Android."}
+{"id":"en040","direction":"en-ru","source":"Jürgen Schmidt works at SAP in Frankfurt.","category":"names"}
+{"id":"en041","direction":"en-ru","source":"Elon Musk visited the SpaceX factory.","category":"names"}
+{"id":"en042","direction":"en-ru","source":"The OpenAI team published the model card.","category":"names"}
+{"id":"en043","direction":"en-ru","source":"IntelliJ IDEA is a popular Java IDE.","category":"names","reference":"IntelliJ IDEA — популярная IDE для Java."}
+{"id":"en044","direction":"en-ru","source":"Netflix released a new original series.","category":"names"}
+{"id":"en045","direction":"en-ru","source":"IBM announced layoffs in the consulting division.","category":"names"}
+{"id":"en046","direction":"en-ru","source":"The Olympic Games will be held in Los Angeles.","category":"names"}
+{"id":"en047","direction":"en-ru","source":"The project is 42 percent complete.","category":"numbers","reference":"Проект завершён на 42 процента."}
+{"id":"en048","direction":"en-ru","source":"Version 1.2.3 is available for download.","category":"numbers","reference":"Версия 1.2.3 доступна для скачивания."}
+{"id":"en049","direction":"en-ru","source":"The price is 1,000,000 dollars.","category":"numbers"}
+{"id":"en050","direction":"en-ru","source":"The meeting starts at 14:30 on 2025-03-15.","category":"numbers","reference":"Встреча начинается в 14:30 15 марта 2025 года."}
+{"id":"en051","direction":"en-ru","source":"The result was 3.14159 after rounding.","category":"numbers"}
+{"id":"en052","direction":"en-ru","source":"We processed 12,500 requests in 90 seconds.","category":"numbers"}
+{"id":"en053","direction":"en-ru","source":"The file size is 2.5 GB.","category":"numbers"}
+{"id":"en054","direction":"en-ru","source":"There are 7 days in a week.","category":"numbers"}
+{"id":"en055","direction":"en-ru","source":"Is that right?","category":"punctuation"}
+{"id":"en056","direction":"en-ru","source":"Wait! I didn't see that.","category":"punctuation"}
+{"id":"en057","direction":"en-ru","source":"Hmm, I am not sure.","category":"punctuation"}
+{"id":"en058","direction":"en-ru","source":"(see chapter 3, page 12)","category":"punctuation"}
+{"id":"en059","direction":"en-ru","source":"And / or — both are possible.","category":"punctuation"}
+{"id":"en060","direction":"en-ru","source":"Stop, he said. Immediately.","category":"punctuation"}
+{"id":"en061","direction":"en-ru","source":"The ratio is 3/4.","category":"punctuation"}
+{"id":"en062","direction":"en-ru","source":"A.B. is a well-known abbreviation.","category":"punctuation"}
+{"id":"en063","direction":"en-ru","source":"Open https://example.com/docs for details.","category":"urls","reference":"Открой https://example.com/docs, чтобы узнать подробности."}
+{"id":"en064","direction":"en-ru","source":"Send the report to j.smith@example.com.","category":"urls","reference":"Отправь отчёт на j.smith@example.com."}
+{"id":"en065","direction":"en-ru","source":"The config file is at /etc/app/settings.yaml.","category":"urls"}
+{"id":"en066","direction":"en-ru","source":"Copy the script from C:\\tools\\backup.bat.","category":"urls"}
+{"id":"en067","direction":"en-ru","source":"See the GitHub issue: https://github.com/org/repo/issues/42.","category":"urls"}
+{"id":"en068","direction":"en-ru","source":"The package is com.example.service.AuthFilter.","category":"urls"}
+{"id":"en069","direction":"en-ru","source":"Run mvn -DskipTests package in the root folder.","category":"urls"}
+{"id":"en070","direction":"en-ru","source":"Email: support.team@vendor.io (subject: bug #1024).","category":"urls"}
+{"id":"en071","direction":"en-ru","source":"After the deployment failed twice, the on-call engineer rolled back the release, enabled verbose logging, and asked the team to reproduce the problem locally before trying again.","category":"long_sentence"}
+{"id":"en072","direction":"en-ru","source":"The conference, which was postponed twice because of the storm, finally took place online, and more than two hundred engineers from fourteen companies joined the discussion.","category":"long_sentence"}
+{"id":"en073","direction":"en-ru","source":"The new payment gateway, unlike the old one, supports refunds in the original currency, automatic retries, and real-time notifications to both the merchant and the customer.","category":"long_sentence"}
+{"id":"en074","direction":"en-ru","source":"Since the migration, the search index rebuilds every night at three, uses half the memory, and the average query time dropped from four hundred to ninety milliseconds.","category":"long_sentence"}
+{"id":"en075","direction":"en-ru","source":"The documentation should explain, step by step, how to configure the reverse proxy, install the certificate, and restart the service without losing active connections.","category":"long_sentence"}
+{"id":"en076","direction":"en-ru","source":"When the disk filled up, the scheduler skipped the backup, wrote a warning to the log, and kept processing the queue instead of stopping the whole pipeline.","category":"long_sentence"}
+{"id":"en077","direction":"en-ru","source":"The review asked the author to split the pull request, add tests for the edge cases, and document the new configuration keys before it could be merged.","category":"long_sentence"}
+{"id":"en078","direction":"en-ru","source":"According to the post-mortem, the incident lasted forty minutes, affected about five percent of users, and was caused by a misconfigured cache invalidation rule.","category":"long_sentence"}
+{"id":"en079","direction":"en-ru","source":"The server is down. Nobody has called the vendor yet. The dashboard shows a spike in errors.","category":"multi_sentence"}
+{"id":"en080","direction":"en-ru","source":"I sent the invoice last week. She has not answered. I will follow up on Monday.","category":"multi_sentence"}
+{"id":"en081","direction":"en-ru","source":"The test passed in the CI. It failed on my machine. The difference is the timezone.","category":"multi_sentence"}
+{"id":"en082","direction":"en-ru","source":"We discussed the deadline. The client moved it by two weeks. The team needs to re-plan.","category":"multi_sentence"}
+{"id":"en083","direction":"en-ru","source":"The patch fixes the crash. It also slows the startup a little. We will measure the impact.","category":"multi_sentence"}
+{"id":"en084","direction":"en-ru","source":"The meeting was cancelled. The notes are still useful. Please read them before Friday.","category":"multi_sentence"}
+{"id":"en085","direction":"en-ru","source":"The model is accurate. It is slow on old hardware. We are looking for a faster quantization.","category":"multi_sentence"}
+{"id":"en086","direction":"en-ru","source":"The app opens slowly. The logs show a long network call. The cache was disabled by mistake.","category":"multi_sentence"}
+{"id":"en087","direction":"en-ru","source":"I saw a bank on the river.","category":"ambiguity"}
+{"id":"en088","direction":"en-ru","source":"The match ended in a draw.","category":"ambiguity"}
+{"id":"en089","direction":"en-ru","source":"She has a light heart.","category":"ambiguity"}
+{"id":"en090","direction":"en-ru","source":"The right decision is not always the easiest.","category":"ambiguity"}
+{"id":"en091","direction":"en-ru","source":"He kept a fair copy of the letter.","category":"ambiguity"}
+{"id":"en092","direction":"en-ru","source":"The book fell from the shelf.","category":"ambiguity"}
+{"id":"en093","direction":"en-ru","source":"We will discuss the spring plan in March.","category":"ambiguity"}
+{"id":"en094","direction":"en-ru","source":"Please send me your address for the invitation.","category":"ambiguity"}
+{"id":"en095","direction":"en-ru","source":"Line one of the report.\nLine two of the report.\nLine three of the report.","category":"formatting"}
+{"id":"en096","direction":"en-ru","source":"First step: install Java.\nSecond step: set JAVA_HOME.\nThird step: run the build.","category":"formatting"}
+{"id":"en097","direction":"en-ru","source":"Total: 100\nDiscount: 10\nResult: 90","category":"formatting"}
+{"id":"en098","direction":"en-ru","source":"- Item A\n- Item B\n- Item C","category":"formatting"}
+{"id":"en099","direction":"en-ru","source":"1. Start the engine\n2. Wait for the log\n3. Check the port","category":"formatting"}
+{"id":"en100","direction":"en-ru","source":"KEY=value\nMODE=test\nDEBUG=false","category":"formatting"}
+{"id":"ru001","direction":"ru-en","source":"Привет, мир!","category":"basic","reference":"Hello, world!","exact":true}
+{"id":"ru002","direction":"ru-en","source":"Доброе утро.","category":"basic","reference":"Good morning.","exact":true}
+{"id":"ru003","direction":"ru-en","source":"Спасибо.","category":"basic","reference":"Thank you.","exact":true}
+{"id":"ru004","direction":"ru-en","source":"Да.","category":"basic","reference":"Yes.","exact":true}
+{"id":"ru005","direction":"ru-en","source":"Нет.","category":"basic","reference":"No.","exact":true}
+{"id":"ru006","direction":"ru-en","source":"Как дела?","category":"basic"}
+{"id":"ru007","direction":"ru-en","source":"Я живу в Москве.","category":"basic"}
+{"id":"ru008","direction":"ru-en","source":"Сегодня хорошая погода.","category":"basic"}
+{"id":"ru009","direction":"ru-en","source":"Я хочу купить хлеб.","category":"basic"}
+{"id":"ru010","direction":"ru-en","source":"Она читает книгу.","category":"basic"}
+{"id":"ru011","direction":"ru-en","source":"Привет, что нового?","category":"conversational"}
+{"id":"ru012","direction":"ru-en","source":"У меня всё хорошо, спасибо.","category":"conversational"}
+{"id":"ru013","direction":"ru-en","source":"До завтра!","category":"conversational"}
+{"id":"ru014","direction":"ru-en","source":"Извини, я опаздываю.","category":"conversational"}
+{"id":"ru015","direction":"ru-en","source":"Мне это очень нравится.","category":"conversational"}
+{"id":"ru016","direction":"ru-en","source":"Что ты об этом думаешь?","category":"conversational"}
+{"id":"ru017","direction":"ru-en","source":"Было приятно с тобой познакомиться.","category":"conversational"}
+{"id":"ru018","direction":"ru-en","source":"Давай зайдём в кафе позже.","category":"conversational"}
+{"id":"ru019","direction":"ru-en","source":"Я не смогу прийти сегодня вечером.","category":"conversational"}
+{"id":"ru020","direction":"ru-en","source":"Ничего страшного, всё в порядке.","category":"conversational"}
+{"id":"ru021","direction":"ru-en","source":"Добавь новый метод в класс OrderService.","category":"technical"}
+{"id":"ru022","direction":"ru-en","source":"Сборка упала из-за отсутствующей зависимости.","category":"technical"}
+{"id":"ru023","direction":"ru-en","source":"Перефактори эту функцию, чтобы повысить читаемость.","category":"technical"}
+{"id":"ru024","direction":"ru-en","source":"Обработай исключение и запиши ошибку в лог.","category":"technical"}
+{"id":"ru025","direction":"ru-en","source":"Соединение с базой данных закрылось по таймауту.","category":"technical"}
+{"id":"ru026","direction":"ru-en","source":"Напиши юнит-тесты для модуля авторизации.","category":"technical"}
+{"id":"ru027","direction":"ru-en","source":"Увеличь размер пула потоков до шестнадцати.","category":"technical"}
+{"id":"ru028","direction":"ru-en","source":"Сборщик мусора потребляет слишком много процессора.","category":"technical"}
+{"id":"ru029","direction":"ru-en","source":"Закоммить изменения и отправь ветку на репозиторий.","category":"technical"}
+{"id":"ru030","direction":"ru-en","source":"Утечка памяти появляется после отключения кэша.","category":"technical"}
+{"id":"ru031","direction":"ru-en","source":"Менеджер пакетов разрешает транзитивные зависимости.","category":"terminology"}
+{"id":"ru032","direction":"ru-en","source":"Используй мьютекс для защиты общего ресурса.","category":"terminology"}
+{"id":"ru033","direction":"ru-en","source":"Балансировщик нагрузки распределяет запросы между узлами.","category":"terminology"}
+{"id":"ru034","direction":"ru-en","source":"Включи строгий режим для линтера.","category":"terminology"}
+{"id":"ru035","direction":"ru-en","source":"API возвращает необратимый код ошибки.","category":"terminology"}
+{"id":"ru036","direction":"ru-en","source":"Используй внедрение зависимостей вместо service locator.","category":"terminology"}
+{"id":"ru037","direction":"ru-en","source":"Контейнерный рантайм планирует под на узле.","category":"terminology"}
+{"id":"ru038","direction":"ru-en","source":"Инъектор зависимостей создаёт объект один раз и передаёт его во все слои.","category":"terminology"}
+{"id":"ru039","direction":"ru-en","source":"Гугл представил новую версию Android.","category":"names","reference":"Google announced a new version of Android."}
+{"id":"ru040","direction":"ru-en","source":"Юрген Шмидт работает в SAP во Франкфурте.","category":"names"}
+{"id":"ru041","direction":"ru-en","source":"Илон Маск посетил завод SpaceX.","category":"names"}
+{"id":"ru042","direction":"ru-en","source":"Команда OpenAI опубликовала технический отчёт.","category":"names"}
+{"id":"ru043","direction":"ru-en","source":"IntelliJ IDEA — популярная среда разработки Java.","category":"names","reference":"IntelliJ IDEA is a popular Java IDE."}
+{"id":"ru044","direction":"ru-en","source":"Netflix выпустил новый оригинальный сериал.","category":"names"}
+{"id":"ru045","direction":"ru-en","source":"IBM объявил о сокращении в консалтинговом подразделении.","category":"names"}
+{"id":"ru046","direction":"ru-en","source":"Олимпийские игры пройдут в Лос-Анджелесе.","category":"names"}
+{"id":"ru047","direction":"ru-en","source":"Проект завершён на сорок два процента.","category":"numbers","reference":"The project is 42 percent complete."}
+{"id":"ru048","direction":"ru-en","source":"Версия 1.2.3 доступна для скачивания.","category":"numbers","reference":"Version 1.2.3 is available for download."}
+{"id":"ru049","direction":"ru-en","source":"Цена составляет 1 000 000 долларов.","category":"numbers"}
+{"id":"ru050","direction":"ru-en","source":"Встреча начинается в 14:30 15 марта 2025 года.","category":"numbers","reference":"The meeting starts at 14:30 on March 15, 2025."}
+{"id":"ru051","direction":"ru-en","source":"Результат равен 3,14159 после округления.","category":"numbers"}
+{"id":"ru052","direction":"ru-en","source":"Мы обработали 12 500 запросов за 90 секунд.","category":"numbers"}
+{"id":"ru053","direction":"ru-en","source":"Размер файла — 2,5 ГБ.","category":"numbers"}
+{"id":"ru054","direction":"ru-en","source":"В неделе семь дней.","category":"numbers"}
+{"id":"ru055","direction":"ru-en","source":"Это правда?","category":"punctuation"}
+{"id":"ru056","direction":"ru-en","source":"Подожди! Я этого не видел.","category":"punctuation"}
+{"id":"ru057","direction":"ru-en","source":"Хм, я не уверен.","category":"punctuation"}
+{"id":"ru058","direction":"ru-en","source":"(см. главу 3, страницу 12)","category":"punctuation"}
+{"id":"ru059","direction":"ru-en","source":"И / или — оба варианта возможны.","category":"punctuation"}
+{"id":"ru060","direction":"ru-en","source":"Остановись, — сказал он, — немедленно.","category":"punctuation"}
+{"id":"ru061","direction":"ru-en","source":"Соотношение равно 3/4.","category":"punctuation"}
+{"id":"ru062","direction":"ru-en","source":"А.Б. — известная аббревиатура.","category":"punctuation"}
+{"id":"ru063","direction":"ru-en","source":"Открой https://example.com/docs, чтобы узнать детали.","category":"urls","reference":"Open https://example.com/docs to learn the details."}
+{"id":"ru064","direction":"ru-en","source":"Отправь отчёт на j.smith@example.com.","category":"urls","reference":"Send the report to j.smith@example.com."}
+{"id":"ru065","direction":"ru-en","source":"Файл настроек находится по пути /etc/app/settings.yaml.","category":"urls"}
+{"id":"ru066","direction":"ru-en","source":"Скопируй скрипт из C:\\tools\\backup.bat.","category":"urls"}
+{"id":"ru067","direction":"ru-en","source":"Смотри проблему на GitHub: https://github.com/org/repo/issues/42.","category":"urls"}
+{"id":"ru068","direction":"ru-en","source":"Пакет называется com.example.service.AuthFilter.","category":"urls"}
+{"id":"ru069","direction":"ru-en","source":"Выполни mvn -DskipTests package в корневой папке.","category":"urls"}
+{"id":"ru070","direction":"ru-en","source":"Почта: support.team@vendor.io (тема: баг #1024).","category":"urls"}
+{"id":"ru071","direction":"ru-en","source":"После двух провалов деплоя инженер дежурной смены откатил релиз, включил подробное логирование и попросил команду воспроизвести проблему локально, прежде чем пробовать снова.","category":"long_sentence"}
+{"id":"ru072","direction":"ru-en","source":"Конференция, которую дважды откладывали из-за шторма, в итоге прошла онлайн, и в обсуждении приняли участие более двухсот инженеров из четырнадцати компаний.","category":"long_sentence"}
+{"id":"ru073","direction":"ru-en","source":"Новый платёжный шлюз, в отличие от старого, поддерживает возврат в исходной валюте, автоматические повторные попытки и мгновенные уведомления и магазину, и клиенту.","category":"long_sentence"}
+{"id":"ru074","direction":"ru-en","source":"После миграции индекс поиска пересобирается каждую ночь в три часа, потребляет вдвое меньше памяти, а среднее время запроса сократилось со 120 до 90 миллисекунд.","category":"long_sentence"}
+{"id":"ru075","direction":"ru-en","source":"Документация должна по шагам объяснять, как настроить reverse proxy, установить сертификат и перезапустить сервис, не теряя активных соединений.","category":"long_sentence"}
+{"id":"ru076","direction":"ru-en","source":"Когда диск заполнился, планировщик пропустил резервное копирование, записал предупреждение в лог и продолжал обрабатывать очередь, а не останавливал весь конвейер.","category":"long_sentence"}
+{"id":"ru077","direction":"ru-en","source":"Ревью просило автора разделить pull request, добавить тесты на крайние случаи и описать новые ключи конфигурации, прежде чем ветку можно будет слить.","category":"long_sentence"}
+{"id":"ru078","direction":"ru-en","source":"Согласно итоговому разбору, инцидент длился сорок минут, затронул около пяти процентов пользователей и был вызван неправильным правилом инвалидации кэша.","category":"long_sentence"}
+{"id":"ru079","direction":"ru-en","source":"Сервер лежит. Никто ещё не позвонил провайдеру. На дашборде виден всплеск ошибок.","category":"multi_sentence"}
+{"id":"ru080","direction":"ru-en","source":"Я отправил счёт на прошлой неделе. Она не отвечает. Я напишу ей в понедельник.","category":"multi_sentence"}
+{"id":"ru081","direction":"ru-en","source":"Тест прошёл в CI. На моей машине он упал. Разница — часовой пояс.","category":"multi_sentence"}
+{"id":"ru082","direction":"ru-en","source":"Мы обсудили дедлайн. Клиент сдвинул его на две недели. Команде нужно перепланировать работу.","category":"multi_sentence"}
+{"id":"ru083","direction":"ru-en","source":"Патч чинит падение. Он также немного замедляет старт. Мы измерим влияние.","category":"multi_sentence"}
+{"id":"ru084","direction":"ru-en","source":"Встречу отменили. Заметки всё равно полезные. Прочитай их до пятницы.","category":"multi_sentence"}
+{"id":"ru085","direction":"ru-en","source":"Модель точная. На старом железе она медленная. Мы ищем более быстрый квант.","category":"multi_sentence"}
+{"id":"ru086","direction":"ru-en","source":"Приложение открывается медленно. В логах виден долгий сетевой запрос. Кэш случайно отключили.","category":"multi_sentence"}
+{"id":"ru087","direction":"ru-en","source":"Команда выиграла матч против чемпиона.","category":"ambiguity"}
+{"id":"ru088","direction":"ru-en","source":"На столе лежало яблоко.","category":"ambiguity"}
+{"id":"ru089","direction":"ru-en","source":"Ключ от дома остался на кухне.","category":"ambiguity"}
+{"id":"ru090","direction":"ru-en","source":"Башня видна из окна.","category":"ambiguity"}
+{"id":"ru091","direction":"ru-en","source":"Перо осталось в столе.","category":"ambiguity"}
+{"id":"ru092","direction":"ru-en","source":"Лист упал с ветки.","category":"ambiguity"}
+{"id":"ru093","direction":"ru-en","source":"Адрес написан на конверте.","category":"ambiguity"}
+{"id":"ru094","direction":"ru-en","source":"Лошадь перепрыгнула забор.","category":"ambiguity"}
+{"id":"ru095","direction":"ru-en","source":"Первая строка отчёта.\nВторая строка отчёта.\nТретья строка отчёта.","category":"formatting"}
+{"id":"ru096","direction":"ru-en","source":"Шаг один: установи Java.\nШаг два: задай JAVA_HOME.\nШаг три: запусти сборку.","category":"formatting"}
+{"id":"ru097","direction":"ru-en","source":"Итого: 100\nСкидка: 10\nРезультат: 90","category":"formatting"}
+{"id":"ru098","direction":"ru-en","source":"- Пункт А\n- Пункт Б\n- Пункт В","category":"formatting"}
+{"id":"ru099","direction":"ru-en","source":"1. Запусти движок\n2. Дождись записи в логе\n3. Проверь порт","category":"formatting"}
+{"id":"ru100","direction":"ru-en","source":"KEY=value\nMODE=test\nDEBUG=false","category":"formatting"}
