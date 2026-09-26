@@ -71,8 +71,9 @@ def orient_pair(key: str, value: str) -> Tuple[str, str]:
 # ---------------------------------------------------------------------------
 
 def user_data_dir() -> str:
-    """Постоянная user-директория приложения (та же логика, что у
-    CacheManager.default_cache_dir):
+    """Постоянная user-директория приложения (единый источник истины для
+    путей данных приложения; используется CacheManager
+    (backends/marian.py), default_dictionary_path и model_cache_dir):
     - Windows: %LOCALAPPDATA%\\OfflineTranslator;
     - Linux/macOS: $XDG_CACHE_HOME/OfflineTranslator
       (или ~/.cache/OfflineTranslator, если переменная не задана).
@@ -83,6 +84,23 @@ def user_data_dir() -> str:
         base = (os.environ.get("XDG_CACHE_HOME")
                 or os.path.join(os.path.expanduser("~"), ".cache"))
     return os.path.join(base, "OfflineTranslator")
+
+
+def model_cache_dir() -> str:
+    """Постоянный кэш моделей (HF-кэш бэкенда Marian).
+
+    Фиксированное местоположение, не зависит от CWD и sys._MEIPASS
+    (единый источник истины; соответствует README):
+    - Windows: %LOCALAPPDATA%\\OfflineTranslator\\cache;
+    - Linux/macOS: $XDG_CACHE_HOME/OfflineTranslator/cache
+      (или ~/.cache/OfflineTranslator/cache, если переменная не задана).
+
+    Используют CacheManager (backends/marian.py — загрузка моделей) и
+    model_registry.ModelManager (проверка доступности моделей БЕЗ их
+    загрузки). Функция каталог не создаёт — создаёт его по требованию
+    CacheManager при загрузке.
+    """
+    return os.path.join(user_data_dir(), "cache")
 
 
 def default_dictionary_path() -> str:

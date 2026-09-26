@@ -32,12 +32,18 @@
 
 ```
 ├── main.py               # GUI-приложение (CustomTkinter): окно, потоки, кнопки
-├── translator.py         # Класс OfflineTranslator: модели MarianMT + перевод
+├── translator.py         # Класс OfflineTranslator: фасад поверх движка + перевод
+├── backends/             # Движки: TranslationBackend (base), MarianBackend,
+│                         #   LlamaCppBackend (GGUF), prompts
+├── model_registry.py     # Этап 8: реестр моделей — ModelDescriptor/
+│                         #   ModelRegistry/ModelManager (какие модели есть
+│                         #   и какая выбрана; без загрузки, без сети)
 ├── dictionary_manager.py # Словарь: общий core (snapshot) + DictionaryManager —
 │                         #   единственный писатель dictionary.json (пары 1:1,
 │                         #   атомарное сохранение, импорт/экспорт)
 ├── history.py            # Модуль истории переводов на SQLite: хранение последних
 │                         #   50 переводов, удаление, экспорт в CSV
+├── benchmarks/           # Этап 7: воспроизводимый бенчмарк Marian vs Hy-MT2 GGUF
 ├── dictionary.json       # Пользовательский словарь терминов (EN↔RU)
 ├── requirements.txt      # Зависимости Python
 ├── build.bat             # Скрипт сборки EXE через PyInstaller (Windows)
@@ -81,6 +87,7 @@ python main.py
 | `torch`          | фреймворк глубокого обучения (CPU/CUDA)     |
 | `sentencepiece`  | токенизация                                 |
 | `sacremoses`     | предобработка текста                        |
+| `llama-cpp-python` | опционально: GGUF-бэкенд (LlamaCppBackend); без него приложение работает (ленивый импорт) |
 
 ## Модели перевода
 
@@ -93,6 +100,18 @@ python main.py
 
 - Windows: `%LOCALAPPDATA%\OfflineTranslator\cache`;
 - Linux/macOS: `$XDG_CACHE_HOME/OfflineTranslator/cache` (если переменная не задана — `~/.cache/OfflineTranslator/cache`).
+
+GGUF-бэкенд (Этап 6, CPU-POC): `tencent/Hy-MT2-1.8B-GGUF` (напр. `Hy-MT2-1.8B-Q4_K_M.gguf`, ~1.1 ГБ) — **локальный файл**, скачивания нет: путь задаётся переменной окружения `OFFLINE_TRANSLATOR_GGUF`, бэкенд выбирается через `OfflineTranslator(backend="llama_cpp", gguf_path=...)`. По умолчанию (`OfflineTranslator()`) используется Marian-бэкенд — поведение не изменилось.
+
+### Реестр моделей (`model_registry.py`, Этап 8)
+
+Backend-нейтральный слой «какие модели существуют и какая выбрана» — следующий этап подключит к нему GUI, не зная деталей движков:
+
+- `ModelDescriptor` — лёгкое описание модели (id, имя, backend, направления, происхождение). Описывает модель, но **не загружает** её;
+- `ModelRegistry` — набор моделей: `get()`, `list()`, `find_by_backend()`, `find_by_direction()`; уникальные id, детерминированный порядок;
+- `ModelManager` — состояние на этой машине: `get_available_models()`, `get_model()`, `is_model_available()`, `get_default_model(direction)`, `resolve()`.
+
+Доступность определяется **без загрузки модели** и без сети (download-функций нет): Marian — по локальному HF-кэшу (см. выше), GGUF — по файлу из `OFFLINE_TRANSLATOR_GGUF`. Зарегистрированные model id: `marian-en-ru`, `marian-ru-en` (Marian — две независимые модели Helsinki-NLP, по одной на направление) и `hy-mt2-1.8b` (GGUF, оба направления).
 
 Кэш сохраняет стандартную структуру HuggingFace. Удаление этой папки приведёт к повторной загрузке моделей при следующем запуске (для EXE со встроенными моделями — восстановлению из бандла).
 

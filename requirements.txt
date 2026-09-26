@@ -4,6 +4,9 @@ torch>=2.1.0
 sentencepiece>=0.1.99
 sacremoses>=0.1.1
 # Этап 6 (GGUF-POC): локальный runtime llama.cpp для LlamaCppBackend (CPU).
-# Опциональная зависимость: Marian-путь и остальное приложение работают
-# без неё (llama_cpp импортируется лениво, в load() бэкенда).
+# Опциональная RUNTIME-зависимость: Marian-путь, приложение и реестр
+# моделей (model_registry) работают без неё — llama_cpp импортируется
+# лениво в load() бэкенда, а model_registry не импортирует его вовсе.
+# Оставлена в requirements.txt, чтобы полная установка (Marian + GGUF)
+# была одной командой; для установки только Marian строку можно удалить.
 llama-cpp-python>=0.3.0

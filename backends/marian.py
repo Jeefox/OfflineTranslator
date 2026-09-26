@@ -25,6 +25,7 @@ import torch
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
 from backends.base import TranslationBackend
+from dictionary_manager import model_cache_dir
 from translation_service import split_sentence_to_chunks
 
 __all__ = ["CacheManager", "MarianBackend", "count_tokens"]
@@ -33,22 +34,23 @@ __all__ = ["CacheManager", "MarianBackend", "count_tokens"]
 class CacheManager:
     """Менеджер кэша моделей с поддержкой PyInstaller.
 
-    В режиме EXE: при старте восстанавливает кэш из бандля (если его
-    нет или он пуст), дальше работает с обычным файлом на диске.
-    В режиме разработки: просто использует папку кэша.
+    Кэш — постоянная директория пользователя
+    (dictionary_manager.model_cache_dir, единый источник истины,
+    не зависит от CWD):
+      Windows — %LOCALAPPDATA%\\OfflineTranslator\\cache,
+      Linux/macOS — $XDG_CACHE_HOME/OfflineTranslator/cache (или ~/.cache/...).
+    В режиме EXE: при старте восстанавливает кэш из бандля
+    (_MEIPASS/cache — тот же layout, что использует build.bat), если его
+    ещё нет или он пуст; дальше работает с обычным файлом на диске.
+    Сам кэш не хранится в _MEIPASS: это временная директория PyInstaller,
+    удаляемая после выхода (кэш должен переживать перезапуски).
     """
 
     def __init__(self, cache_dir: Optional[str] = None):
-        # Если кэш не задан, используем локальную папку в текущем каталоге
+        # Если кэш не задан — постоянная пользовательская директория
+        # (и в режиме разработки, и в EXE; не зависит от CWD — README).
         if cache_dir is None:
-            # Если PyInstaller и есть .spec файл, значит собираемся в EXE
-            if getattr(sys, 'frozen', False):
-                # Режим EXE: папка рядом с EXE
-                base = sys._MEIPASS
-            else:
-                # Режим разработки: текущий каталог
-                base = os.getcwd()
-            cache_dir = os.path.join(base, "model_cache")
+            cache_dir = model_cache_dir()
 
         self.cache_dir = cache_dir
         self.bundle_dir = None
@@ -64,10 +66,16 @@ class CacheManager:
             self._restore_from_bundle()
 
     def _get_bundle_path(self) -> Optional[str]:
-        """Путь к каталогу моделей, упакованному в EXE (или None)."""
+        """Путь к каталогу моделей, упакованному в EXE (или None).
+
+        build.bat встраивает кэш моделей через
+        `--add-data "cache;cache"`, т.е. в бандле модели лежат в
+        `_MEIPASS/cache` (а не в "models" — ранняя несогласованность,
+        из-за которой восстановление из бандля молча не работало).
+        """
         if not self.is_exe:
             return None
-        path = os.path.join(sys._MEIPASS, "models")
+        path = os.path.join(sys._MEIPASS, "cache")
         if os.path.isdir(path):
             return path
         return None
