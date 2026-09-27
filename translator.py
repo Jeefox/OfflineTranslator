@@ -10,6 +10,11 @@
               |     сентенс-пайплайн, token-aware chunking (общий алгоритм),
               |     сборка результата, translate_stream; без torch/transformers;
               |
+              +-- ModelManager (model_registry.py) — Этап 9: выбор КОНКРЕТНОЙ
+              |     модели по model_id: дескриптор + локальная доступность
+              |     (без загрузки моделей, без сети); создание бэкенда
+              |     остаётся в этом фасаде;
+              |
               +-- MarianBackend (backends/marian.py) — Marian/Transformers-
                     специфика: загрузка моделей, CPU/CUDA, выбор модели EN↔RU,
                     лимит входных токенов, inference (model.generate);
@@ -17,11 +22,17 @@
                     (CPU-POC, Этап 6): tencent/Hy-MT2-1.8B через
                     llama-cpp-python, model-specific prompt в backends/prompts.py.
 
-Выбор бэкенда — параметр OfflineTranslator(backend=..., gguf_path=...);
-по умолчанию 'marian' (поведение до Этапа 6). Новый бэкенд добавляется
-в backends/ без касаний общего сервиса и GUI: main.py создаёт
-OfflineTranslator() без параметров и не знает, какой движок выполняется.
+Выбор бэкенда/модели:
+- legacy (Этап 6): OfflineTranslator(backend=..., gguf_path=...);
+  по умолчанию 'marian' (поведение до Этапа 6);
+- новый (Этап 9): OfflineTranslator(model_id=...) — конкретная модель по
+  id реестра (model_registry): 'marian-en-ru', 'marian-ru-en',
+  'hy-mt2-1.8b'. model_id и backend одновременно НЕ задаются.
+Новый бэкенд добавляется в backends/ без касаний общего сервиса и GUI:
+main.py создаёт OfflineTranslator() без параметров и не знает, какой
+движок выполняется.
 """
+import os
 from typing import Optional
 
 # load_snapshot намеренно — модульное имя этого модуля:
@@ -29,6 +40,11 @@ from typing import Optional
 # translator.load_snapshot, а сервис резолвит его через globals()
 # в момент вызова (см. _load_snapshot()).
 from dictionary_manager import default_dictionary_path, load_snapshot  # noqa: F401
+from model_registry import (
+    GGUF_ENV_VAR,
+    ModelManager,
+    ModelUnavailableError,
+)
 from translation_service import (
     TranslationService,
     split_sentence_to_chunks,
@@ -61,33 +77,71 @@ class OfflineTranslator(TranslationService):
     _token_count) сохранены как регрессионный контракт тестов и реализованы
     поверх общих функций.
 
-    Выбор бэкенда (Этап 6, POC): параметр backend — 'marian' (default,
-    как до Этапа 6) или 'llama_cpp' (GGUF tencent/Hy-MT2-1.8B; путь к
-    локальному GGUF-файлу — gguf_path, скачивания модели нет). GUI
-    (main.py) создаёт OfflineTranslator() без параметров и НЕ знает,
-    какой именно движок выполняется — веток вида `if backend == ...`
-    в main.py нет.
+    Выбор модели:
+    - model_id (Этап 9) — новый способ выбрать КОНКРЕТную модель по id
+      реестра (model_registry.default_registry()):
+          "marian-en-ru" — Marian EN→RU (Helsinki-NLP/opus-mt-en-ru);
+          "marian-ru-en" — Marian RU→EN (Helsinki-NLP/opus-mt-ru-en);
+          "hy-mt2-1.8b"  — GGUF tencent/Hy-MT2-1.8B (оба направления;
+                           путь — gguf_path либо переменная окружения
+                           OFFLINE_TRANSLATOR_GGUF — механизм Этапа 6).
+      Выбор разрешается через ModelManager: дескриптор + локальная
+      доступность (без загрузки моделей, без сети). Неизвестный id —
+      ModelNotFoundError (со списком известных id); модель отсутствует
+      локально — ModelUnavailableError (СКАЧИВАНИЯ НЕ ПРОИЗВОДИТСЯ).
+      Выбранная модель ограничивает направления: translate()/
+      translate_stream() в неподдерживаемом направлении — явная ошибка
+      (молчаливого перевода не в том направлении нет).
+    - backend (legacy, Этап 6) — низкоуровневый выбор бэкенда без
+      конкретной модели: 'marian' (default — поведение до Этапа 6) или
+      'llama_cpp' (нужен gguf_path). model_id и backend одновременно
+      задавать нельзя (ValueError).
+
+    GUI (main.py) создаёт OfflineTranslator() без параметров и НЕ знает,
+    какая именно модель/движок выполняется — веток вида
+    `if backend == ...` в main.py нет.
     """
 
     def __init__(self, cache_dir: Optional[str] = None,
-                 backend: str = "marian",
-                 gguf_path: Optional[str] = None):
-        if backend == "marian":
-            # Marian-движок: кэш моделей (не зависит от CWD; EXE — из бандля),
-            # CPU/CUDA, модели обоих направлений, лимит входных токенов.
-            backend_obj = MarianBackend(cache_dir=cache_dir)
-        elif backend == "llama_cpp":
-            # GGUF-движок (CPU-POC): локальный GGUF-файл, путь явный;
-            # POC-настройки по умолчанию (n_ctx и т.д. — в LlamaCppBackend).
-            if not gguf_path:
+                 backend: Optional[str] = None,
+                 gguf_path: Optional[str] = None,
+                 model_id: Optional[str] = None):
+        if model_id is not None:
+            # --- Этап 9: выбор конкретной модели через реестр ---
+            if backend is not None:
                 raise ValueError(
-                    "OfflineTranslator(backend='llama_cpp'): нужен gguf_path "
-                    "(путь к локальному GGUF-файлу tencent/Hy-MT2-1.8B)")
-            backend_obj = LlamaCppBackend(gguf_path)
+                    "OfflineTranslator: model_id=%r и backend=%r нельзя "
+                    "задавать вместе: model_id — новый способ выбрать "
+                    "конкретную модель (бэкенд определяется по её "
+                    "дескриптору), backend=... — legacy-способ выбрать "
+                    "бэкенд. Укажите только одно из двух."
+                    % (model_id, backend))
+            backend_obj, directions = self._resolve_model(
+                model_id, gguf_path, cache_dir)
         else:
-            raise ValueError(
-                "OfflineTranslator: неизвестный backend %r "
-                "(доступны: 'marian', 'llama_cpp')" % (backend,))
+            # --- Legacy (Этап 6): поведение без изменений ---
+            if backend is None:
+                backend = "marian"
+            if backend == "marian":
+                # Marian-движок: кэш моделей (не зависит от CWD; EXE —
+                # из бандля), CPU/CUDA, модели обоих направлений,
+                # лимит входных токенов.
+                backend_obj = MarianBackend(cache_dir=cache_dir)
+                directions = None  # без ограничений — legacy-поведение
+            elif backend == "llama_cpp":
+                # GGUF-движок (CPU-POC): локальный GGUF-файл, путь явный;
+                # POC-настройки по умолчанию (n_ctx и т.д. — в LlamaCppBackend).
+                if not gguf_path:
+                    raise ValueError(
+                        "OfflineTranslator(backend='llama_cpp'): нужен "
+                        "gguf_path (путь к локальному GGUF-файлу "
+                        "tencent/Hy-MT2-1.8B)")
+                backend_obj = LlamaCppBackend(gguf_path)
+                directions = None
+            else:
+                raise ValueError(
+                    "OfflineTranslator: неизвестный backend %r "
+                    "(доступны: 'marian', 'llama_cpp')" % (backend,))
 
         # TranslationService.__init__ вызывает backend.load().
         super().__init__(backend=backend_obj, snapshot_loader=_load_snapshot)
@@ -99,6 +153,118 @@ class OfflineTranslator(TranslationService):
         # Менеджер кэша — тот же объект, что и внутри бэкенда;
         # у бэкендов без кэша (llama_cpp) — None.
         self.cache_manager = getattr(self.backend, "cache_manager", None)
+        # Этап 9: выбранная модель (None — legacy-выбор backend=...).
+        self.model_id = model_id
+        # Направления выбранной модели (descriptor.directions) или None —
+        # без ограничений (legacy: направление валидирует сам бэкенд).
+        self._model_directions = directions
+
+    # ------------------------------------------------------------------ #
+    #  Этап 9: разрешение model_id (ModelManager; без загрузки моделей)   #
+    # ------------------------------------------------------------------ #
+    def _resolve_model(self, model_id: str, gguf_path: Optional[str],
+                       cache_dir: Optional[str]):
+        """model_id -> (backend_obj, directions).
+
+        Выбор разрешается через ModelManager (model_registry): дескриптор
+        + локальная доступность (лёгкие stdlib-проверки, без загрузки
+        моделей и без сети). Создание объекта бэкенда остаётся здесь,
+        в фасаде: ModelManager не является factory.
+
+        Ошибки:
+          - неизвестный model_id — ModelNotFoundError (реестр; список
+            известных id);
+          - модель отсутствует локально — ModelUnavailableError
+            (сообщение указывает, где ожидается локальный источник;
+            скачивание НЕ выполняется);
+          - gguf_path для не-GGUF-модели — ValueError.
+        """
+        manager = ModelManager(cache_dir=cache_dir)
+        descriptor = manager.get_model(model_id)
+        if gguf_path is not None and descriptor.backend != "llama_cpp":
+            raise ValueError(
+                "OfflineTranslator(model_id=%r): gguf_path имеет смысл "
+                "только для GGUF-моделей (backend='llama_cpp'), у этой "
+                "модели backend=%r."
+                % (model_id, descriptor.backend))
+        if descriptor.backend == "marian":
+            if not manager.is_model_available(model_id):
+                raise ModelUnavailableError(
+                    "Модель %r (%s) сейчас недоступна локально: HF-модель "
+                    "%s не найдена в кэше %s. Модель не скачивается "
+                    "автоматически — положите модель в локальный HF-кэш "
+                    "или выберите доступную модель "
+                    "(ModelManager.get_available_models())."
+                    % (model_id, descriptor.name,
+                       descriptor.hf_model_id, manager.cache_dir))
+            # MarianBackend загружает модели обоих направлений (как и
+            # legacy-конструктор); ограничение направления — на уровне
+            # фасада (_model_directions), поведение загрузки не меняется.
+            return MarianBackend(cache_dir=cache_dir), descriptor.directions
+        if descriptor.backend == "llama_cpp":
+            if gguf_path is not None:
+                # Явный путь — существующий контракт LlamaCppBackend:
+                # файл должен существовать (имя модели не проверяется).
+                path = os.path.expanduser(str(gguf_path))
+                if not os.path.isfile(path):
+                    raise ModelUnavailableError(
+                        "Модель %r (%s) сейчас недоступна локально: "
+                        "GGUF-файл не найден: %r. Модель не скачивается "
+                        "автоматически."
+                        % (model_id, descriptor.name, gguf_path))
+            else:
+                # Существующий механизм Этапа 6: путь — из env
+                # OFFLINE_TRANSLATOR_GGUF (реестр проверяет файл и имя
+                # модели в имени файла).
+                if not manager.is_model_available(model_id):
+                    raise ModelUnavailableError(
+                        "Модель %r (%s) сейчас недоступна локально: файл "
+                        "GGUF не найден. Передайте gguf_path=... (путь к "
+                        ".gguf-файлу) или задайте переменную окружения "
+                        "%s. Модель не скачивается автоматически."
+                        % (model_id, descriptor.name, GGUF_ENV_VAR))
+                path = os.path.expanduser(str(os.environ[GGUF_ENV_VAR]))
+            return LlamaCppBackend(path), descriptor.directions
+        raise ValueError(
+            "OfflineTranslator(model_id=%r): неизвестный backend %r в "
+            "дескрипторе модели."
+            % (model_id, descriptor.backend))
+
+    # ------------------------------------------------------------------ #
+    #  Направление: проверка для модели, выбранной через model_id         #
+    # ------------------------------------------------------------------ #
+    def _check_direction(self, direction: str) -> None:
+        """Модель, выбранная через model_id, поддерживает только свои
+        направления (descriptor.directions): неподдерживаемое направление —
+        явная ValueError (молчаливого перевода не в том направлении нет).
+        Legacy-выбор (_model_directions is None) — без ограничений:
+        направление валидирует сам бэкенд, как раньше."""
+        allowed = self._model_directions
+        if allowed is not None and direction not in allowed:
+            raise ValueError(
+                "Модель %r не поддерживает направление %r "
+                "(модель поддерживает: %s). Выберите модель для нужного "
+                "направления — реестр моделей (model_registry)."
+                % (self.model_id, direction, ", ".join(allowed)))
+
+    def translate(self, text: str, direction: str = "en-ru") -> str:
+        """Перевод (контракт TranslationService.translate сохранён:
+        возвращает str, ошибки — «Ошибка перевода: ...»). Перед вызовом
+        сервиса проверяется направление выбранной модели (Этап 9)."""
+        try:
+            self._check_direction(direction)
+        except ValueError as e:
+            # Тот же формат, что и для ошибок бэкенда внутри translate().
+            return "Ошибка перевода: %s" % e
+        return super().translate(text, direction)
+
+    def translate_stream(self, text: str, direction: str = "en-ru",
+                         on_sentence=None) -> str:
+        """Инкрементальный перевод (контракт TranslationService.
+        translate_stream сохранён: исключения пробрасываются). Направление
+        выбранной модели проверяется до начала обработки (Этап 9)."""
+        self._check_direction(direction)
+        return super().translate_stream(text, direction, on_sentence)
 
     # ------------------------------------------------------------------ #
     #  Исторические приватные методы (контракт регрессионных тестов)      #

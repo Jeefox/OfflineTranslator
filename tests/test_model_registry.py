@@ -17,6 +17,9 @@ ModelManager).
 - backward compatibility: OfflineTranslator() — по умолчанию Marian
   (без загрузки реальной модели — фейковый бэкенд + фасадная проводка
   llama_cpp);
+- Этап 9: model_id в OfflineTranslator (конфликт model_id/backend,
+  неизвестный id, доступность и понятные ошибки без скачивания,
+  direction mismatch, GGUF-путь gguf_path/env, lazy loading);
 - lazy loading: `import model_registry`, перечисление моделей и
   get_available_models() НЕ импортируют torch/transformers/llama_cpp
   и не создают файлов/каталогов (чистый subprocess).
@@ -357,11 +360,29 @@ if translator is not None:
           facade.device == "cpu"
           and facade.max_source_tokens == 480
           and facade.cache_manager is None)
+    # Этап 9: default-выбор — legacy-путь, model_id не задан
+    check("facade_default_model_id_attr", facade.model_id is None)
+    # Явный legacy backend="marian" — поведение не изменилось
+    translator.MarianBackend = _FakeMarian
+    try:
+        facade_m = translator.OfflineTranslator(backend="marian")
+    finally:
+        translator.MarianBackend = _orig_marian
+    check("facade_legacy_backend_marian",
+          isinstance(facade_m.backend, _FakeMarian)
+          and facade_m.model_id is None)
+    # Этап 9: сигнатура расширена параметром model_id; дефолт backend —
+    # None (== 'marian': поведение не изменилось; None позволяет
+    # отличить «backend не указан» для правила конфликта
+    # model_id/backend).
     _sig = inspect.signature(translator.OfflineTranslator.__init__)
-    check("facade_signature_unchanged",
-          _sig.parameters["backend"].default == "marian"
+    check("facade_signature_stage9",
+          list(_sig.parameters) == ["self", "cache_dir", "backend",
+                                    "gguf_path", "model_id"]
           and _sig.parameters["cache_dir"].default is None
-          and _sig.parameters["gguf_path"].default is None)
+          and _sig.parameters["backend"].default is None
+          and _sig.parameters["gguf_path"].default is None
+          and _sig.parameters["model_id"].default is None)
 
     # Проводка llama_cpp: отсутствующий файл — FileNotFoundError
     # (до load(); модель не загружается)
@@ -381,7 +402,295 @@ if translator is not None:
         check("facade_unknown_backend", True)
 
 # ---------------------------------------------------------------------
-# 6. Lazy loading: без тяжёлых импортов и без side effects
+# 6. Этап 9: model_id в OfflineTranslator
+# ---------------------------------------------------------------------
+# Выбор — через ModelManager (дескриптор + доступность, без загрузки
+# моделей); создание бэкенда — в фасаде. Бэкенды — фейки через тестовые
+# швы: translator.MarianBackend (глобальное имя фасада) и
+# backends.llama_cpp._default_llama_factory (тот же приём, что в
+# test_llama_cpp_backend.py). Без реальных моделей, без сети.
+if translator is not None:
+    import backends.llama_cpp as _lc  # лёгкий модуль: без импорта llama_cpp
+
+    class _FakeMarian9:
+        """Фейк Marian-бэкенда с полным контрактом TranslationBackend
+        (запоминает args конструктора; translate_chunk — эхо)."""
+        name = "marian"
+        instances = []
+
+        def __init__(self, cache_dir=None):
+            self.cache_dir = cache_dir
+            self.cache_manager = None
+            self.device = "cpu"
+            self.max_source_tokens = 480
+            _FakeMarian9.instances.append(self)
+
+        def load(self):
+            pass
+
+        def split_sentence(self, sentence, direction):
+            return [sentence]
+
+        def translate_chunk(self, chunk, direction):
+            return "⟪%s⟫" % chunk
+
+    class _FakeLlama9:
+        """Минимальный фейк llama_cpp.Llama
+        (tokenize/create_completion — как использует LlamaCppBackend)."""
+
+        def __init__(self, model_path, n_ctx, verbose=False,
+                     response="⟪llama⟫"):
+            self.model_path = model_path
+            self.n_ctx = n_ctx
+            self.response = response
+
+        def tokenize(self, text, add_bos=True, special=False):
+            if isinstance(text, bytes):
+                text = text.decode("utf-8")
+            return list(range(1, len(text.split()) + 1))
+
+        def create_completion(self, prompt=None, max_tokens=None,
+                              stop=None, **kw):
+            return {"choices": [{"text": self.response}]}
+
+    TMP9 = os.path.join(TMP, "stage9")
+    os.makedirs(TMP9, exist_ok=True)
+
+    # --- model_id и backend одновременно — явный ValueError (конфликт) ---
+    for _mid, _be in (("marian-en-ru", "marian"),
+                      ("hy-mt2-1.8b", "llama_cpp"),
+                      ("marian-ru-en", "marian")):
+        try:
+            translator.OfflineTranslator(model_id=_mid, backend=_be)
+            check("facade9_conflict_%s_%s" % (_mid, _be), False)
+        except ValueError as e:
+            check("facade9_conflict_%s_%s" % (_mid, _be),
+                  "model_id" in str(e) and "backend" in str(e), str(e))
+
+    # Неизвестный model id — ModelNotFoundError (реестр; список known id)
+    try:
+        translator.OfflineTranslator(model_id="does-not-exist")
+        check("facade9_unknown_model", False)
+    except ModelNotFoundError as e:
+        check("facade9_unknown_model",
+              "does-not-exist" in str(e)
+              and "marian-en-ru" in str(e)
+              and "hy-mt2-1.8b" in str(e), str(e))
+
+    # gguf_path для не-GGUF-модели — явный ValueError
+    try:
+        translator.OfflineTranslator(model_id="marian-en-ru",
+                                     gguf_path="x.gguf")
+        check("facade9_gguf_path_on_marian", False)
+    except ValueError as e:
+        check("facade9_gguf_path_on_marian", "gguf_path" in str(e), str(e))
+
+
+    # «Бомбы»: при ошибках разрешения бэкенд НЕ создаётся вообще
+    class _BombBackend:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError(
+                "бэкенд не должен создаваться при ошибке разрешения")
+
+    _orig_marian9 = translator.MarianBackend
+    _orig_llama9 = translator.LlamaCppBackend
+    _saved_env9 = os.environ.pop(GGUF_ENV, None)
+    translator.MarianBackend = _BombBackend
+    translator.LlamaCppBackend = _BombBackend
+    empty_cache9 = os.path.join(TMP9, "empty_cache")
+    os.makedirs(empty_cache9, exist_ok=True)
+    try:
+        # неизвестный id — без создания бэкенда
+        try:
+            translator.OfflineTranslator(model_id="nope")
+            check("facade9_unknown_no_backend", False)
+        except ModelNotFoundError:
+            check("facade9_unknown_no_backend", True)
+        # Marian-модель не в кэше — MarianBackend не создаётся
+        try:
+            translator.OfflineTranslator(
+                model_id="marian-en-ru", cache_dir=empty_cache9)
+            check("facade9_marian_unavailable_no_backend", False)
+        except ModelUnavailableError:
+            check("facade9_marian_unavailable_no_backend", True)
+        # GGUF без env и без gguf_path — LlamaCppBackend не создаётся
+        try:
+            translator.OfflineTranslator(model_id="hy-mt2-1.8b")
+            check("facade9_gguf_unavailable_no_backend", False)
+        except ModelUnavailableError:
+            check("facade9_gguf_unavailable_no_backend", True)
+    finally:
+        translator.MarianBackend = _orig_marian9
+        translator.LlamaCppBackend = _orig_llama9
+        if _saved_env9 is not None:
+            os.environ[GGUF_ENV] = _saved_env9
+        else:
+            os.environ.pop(GGUF_ENV, None)
+
+    # --- Доступность: понятная ошибка (id, источник, «не скачивается») ---
+    try:
+        translator.OfflineTranslator(model_id="marian-en-ru",
+                                     cache_dir=empty_cache9)
+        check("facade9_marian_unavailable_msg", False)
+    except ModelUnavailableError as e:
+        msg = str(e)
+        check("facade9_marian_unavailable_msg",
+              "marian-en-ru" in msg
+              and "Helsinki-NLP/opus-mt-en-ru" in msg
+              and empty_cache9 in msg
+              and "не скачивается" in msg, msg)
+    os.environ.pop(GGUF_ENV, None)
+    try:
+        translator.OfflineTranslator(model_id="hy-mt2-1.8b")
+        check("facade9_gguf_unavailable_msg", False)
+    except ModelUnavailableError as e:
+        msg = str(e)
+        check("facade9_gguf_unavailable_msg",
+              "hy-mt2-1.8b" in msg
+              and "OFFLINE_TRANSLATOR_GGUF" in msg
+              and "gguf_path" in msg
+              and "не скачивается" in msg, msg)
+
+
+    # --- model_id="marian-en-ru" → Marian-бэкенд, только направление
+    #     en-ru (direction mismatch — явная ошибка, а не тихий перевод) ---
+    cache9 = os.path.join(TMP9, "hf_cache")
+    make_hf_cache(cache9, "Helsinki-NLP/opus-mt-en-ru")
+    _FakeMarian9.instances.clear()
+    translator.MarianBackend = _FakeMarian9
+    try:
+        t9 = translator.OfflineTranslator(
+            model_id="marian-en-ru", cache_dir=cache9)
+        check("facade9_marian_backend",
+              isinstance(t9.backend, _FakeMarian9), str(type(t9.backend)))
+        check("facade9_marian_model_id_attr", t9.model_id == "marian-en-ru")
+        check("facade9_marian_cache_dir",
+              _FakeMarian9.instances[-1].cache_dir == cache9,
+              str(_FakeMarian9.instances[-1].cache_dir))
+        check("facade9_marian_attrs",
+              t9.max_source_tokens == 480
+              and t9.device == "cpu"
+              and t9.cache_manager is None)
+        # Пайплайн: translate/translate_stream работают (словарь изолирован)
+        t9.dictionary_path = os.path.join(TMP9, "no_dict.json")
+        r = t9.translate("Hello world.", "en-ru")
+        check("facade9_marian_translate", r == "⟪Hello world.⟫", r)
+        ev = []
+        fin = t9.translate_stream(
+            "Alpha one. Beta two.", "en-ru",
+            on_sentence=lambda ph, d, t, u: ev.append(ph))
+        check("facade9_marian_stream",
+              fin == "⟪Alpha one.⟫ ⟪Beta two.⟫"
+              and ev == ["start", "done", "start", "done"], (fin, str(ev)))
+        # Direction mismatch: translate() — «Ошибка перевода: ...»
+        # (тот же формат, что и для ошибок бэкенда)
+        r = t9.translate("Привет, мир.", "ru-en")
+        check("facade9_marian_dir_mismatch_translate",
+              r.startswith("Ошибка перевода:")
+              and "marian-en-ru" in r
+              and "ru-en" in r
+              and "en-ru" in r, r)
+        # translate_stream() — исключение (контракт: stream не глотает)
+        try:
+            t9.translate_stream("Привет, мир.", "ru-en")
+            check("facade9_marian_dir_mismatch_stream", False)
+        except ValueError as e:
+            check("facade9_marian_dir_mismatch_stream",
+                  "marian-en-ru" in str(e) and "ru-en" in str(e), str(e))
+    finally:
+        translator.MarianBackend = _orig_marian9
+
+    # --- model_id="marian-ru-en" → только направление ru-en ---
+    cache9b = os.path.join(TMP9, "hf_cache_ru")
+    make_hf_cache(cache9b, "Helsinki-NLP/opus-mt-ru-en")
+    translator.MarianBackend = _FakeMarian9
+    try:
+        t9b = translator.OfflineTranslator(
+            model_id="marian-ru-en", cache_dir=cache9b)
+        t9b.dictionary_path = os.path.join(TMP9, "no_dict.json")
+        check("facade9_marian_ru_translate",
+              t9b.translate("Привет, мир.", "ru-en") == "⟪Привет, мир.⟫")
+        r = t9b.translate("Hello world.", "en-ru")
+        check("facade9_marian_ru_dir_mismatch",
+              r.startswith("Ошибка перевода:")
+              and "marian-ru-en" in r and "en-ru" in r, r)
+    finally:
+        translator.MarianBackend = _orig_marian9
+
+
+    # --- model_id="hy-mt2-1.8b" → llama_cpp-бэкенд, без реальной загрузки ---
+    gguf9 = os.path.join(TMP9, "fake-Hy-MT2-1.8B-Q4_K_M.gguf")
+    with open(gguf9, "wb") as f:
+        f.write(b"GGUF")
+    _factory_holder = {
+        "f": lambda mp, n_ctx, verbose=False: _FakeLlama9(mp, n_ctx, verbose)}
+    _orig_factory = _lc._default_llama_factory
+    _llama_in_sys_before = "llama_cpp" in sys.modules
+    _lc._default_llama_factory = (
+        lambda mp, n_ctx, verbose=False, _h=_factory_holder:
+            _h["f"](mp, n_ctx, verbose))
+    try:
+        # Явный gguf_path (существующий контракт: файл должен существовать)
+        t10 = translator.OfflineTranslator(
+            model_id="hy-mt2-1.8b", gguf_path=gguf9)
+        check("facade9_gguf_backend",
+              isinstance(t10.backend, translator.LlamaCppBackend),
+              str(type(t10.backend)))
+        check("facade9_gguf_model_id_attr", t10.model_id == "hy-mt2-1.8b")
+        check("facade9_gguf_path_used", t10.backend.model_path == gguf9,
+              t10.backend.model_path)
+        # Lazy loading: разрешение + конструирование не импортируют
+        # llama_cpp раньше существующего момента load()
+        check("facade9_gguf_no_llama_cpp_import",
+              ("llama_cpp" in sys.modules) == _llama_in_sys_before)
+        check("facade9_gguf_attrs",
+              t10.device == "cpu"
+              and t10.max_source_tokens == 4096 - 1024 - 128 - 32
+              and t10.cache_manager is None,
+              str((t10.device, t10.max_source_tokens)))
+        # Оба направления модели допустимы — ограничений нет
+        t10.dictionary_path = os.path.join(TMP9, "no_dict.json")
+        check("facade9_gguf_translate_en",
+              t10.translate("Hello world.", "en-ru") == "⟪llama⟫")
+        check("facade9_gguf_translate_ru",
+              t10.translate("Привет, мир.", "ru-en") == "⟪llama⟫")
+        ev = []
+        fin = t10.translate_stream(
+            "Alpha one. Beta two.", "en-ru",
+            on_sentence=lambda ph, d, t, u: ev.append(ph))
+        check("facade9_gguf_stream",
+              fin == "⟪llama⟫ ⟪llama⟫"
+              and ev == ["start", "done", "start", "done"], (fin, str(ev)))
+        # Явный gguf-файл отсутствует — ModelUnavailableError (не молча)
+        try:
+            translator.OfflineTranslator(
+                model_id="hy-mt2-1.8b",
+                gguf_path=os.path.join(TMP9, "missing.gguf"))
+            check("facade9_gguf_missing_path", False)
+        except ModelUnavailableError as e:
+            check("facade9_gguf_missing_path",
+                  "missing.gguf" in str(e) and "hy-mt2-1.8b" in str(e),
+                  str(e))
+    finally:
+        _lc._default_llama_factory = _orig_factory
+        os.environ.pop(GGUF_ENV, None)
+
+    # --- gguf-путь из env OFFLINE_TRANSLATOR_GGUF (механизм Этапа 6) ---
+    _lc._default_llama_factory = (
+        lambda mp, n_ctx, verbose=False, _h=_factory_holder:
+            _h["f"](mp, n_ctx, verbose))
+    os.environ[GGUF_ENV] = gguf9
+    try:
+        t11 = translator.OfflineTranslator(model_id="hy-mt2-1.8b")
+        check("facade9_gguf_env_path", t11.backend.model_path == gguf9,
+              t11.backend.model_path)
+    finally:
+        _lc._default_llama_factory = _orig_factory
+        os.environ.pop(GGUF_ENV, None)
+
+
+# ---------------------------------------------------------------------
+# 7. Lazy loading: без тяжёлых импортов и без side effects
 #    (чистый subprocess — основной процесс тестов мог уже что-то импортировать)
 # ---------------------------------------------------------------------
 _LAZY_CODE = '''

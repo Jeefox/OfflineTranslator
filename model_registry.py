@@ -31,9 +31,14 @@
 
 Lazy loading: модуль НЕ импортирует torch/transformers/llama_cpp и даже
 пакет backends — доступность проверяется лёгкими filesystem-проверками
-(Marian — структура HF-кэша; GGUF — файл из env). Поведение
-OfflineTranslator() не меняется (по умолчанию — Marian); реестр
-подготовлен для последующего подключения (GUI, позднее — downloader).
+(Marian — структура HF-кэша; GGUF — файл из env).
+
+Подключение к пайплайну (Этап 9): OfflineTranslator(model_id=...) —
+выбор разрешается через ModelManager (дескриптор + доступность, без
+загрузки моделей); создание объекта бэкенда остаётся в фасаде
+(translator.py), т.е. ModelManager не является factory. Поведение
+OfflineTranslator() по умолчанию не меняется (Marian); GUI использует
+реестр в отдельном (последующем) этапе; download-функций нет.
 """
 import os
 from dataclasses import dataclass

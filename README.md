@@ -113,6 +113,20 @@ Backend-нейтральный слой «какие модели существ
 
 Доступность определяется **без загрузки модели** и без сети (download-функций нет): Marian — по локальному HF-кэшу (см. выше), GGUF — по файлу из `OFFLINE_TRANSLATOR_GGUF`. Зарегистрированные model id: `marian-en-ru`, `marian-ru-en` (Marian — две независимые модели Helsinki-NLP, по одной на направление) и `hy-mt2-1.8b` (GGUF, оба направления).
 
+### Выбор модели в пайплайне (Этап 9)
+
+`ModelManager` подключён к `OfflineTranslator` через параметр `model_id` — новый способ выбрать **конкретную** модель (legacy-способ `backend=` сохранён):
+
+```python
+OfflineTranslator()                                        # по умолчанию — Marian (без изменений)
+OfflineTranslator(backend="marian")                        # legacy: Marian
+OfflineTranslator(backend="llama_cpp", gguf_path="...")    # legacy: GGUF
+OfflineTranslator(model_id="marian-en-ru")                 # новый: конкретная модель
+OfflineTranslator(model_id="hy-mt2-1.8b", gguf_path="...") # GGUF: gguf_path или OFFLINE_TRANSLATOR_GGUF
+```
+
+Правила: `model_id` и `backend` одновременно задавать нельзя (`ValueError`); неизвестный id — `ModelNotFoundError` (со списком известных); модель отсутствует локально — `ModelUnavailableError` (скачивание **не** выполняется, в сообщении — где ожидается источник); `gguf_path` к не-GGUF-модели — `ValueError`. Выбранная через `model_id` модель ограничивает направления: `translate()`/`translate_stream()` в неподдерживаемом направлении — явная ошибка, а не тихий перевод не в том направлении (legacy-режим без `model_id` — без ограничений, как раньше).
+
 Кэш сохраняет стандартную структуру HuggingFace. Удаление этой папки приведёт к повторной загрузке моделей при следующем запуске (для EXE со встроенными моделями — восстановлению из бандла).
 
 ## Формат словаря
