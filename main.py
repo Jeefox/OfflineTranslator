@@ -288,7 +288,12 @@ class TranslatorApp(ctk.CTk):
         
         # Без фиксированных width/height: размер задаёт grid
         # (sticky="nsew" + weight) — поле тянется по ширине и высоте с окном.
+        # wrap="word" (Этап 12): визуальный перенос длинных строк по ширине
+        # виджета — задача самого Text; в ЛОГИЧЕСКИЙ текст переносы не
+        # вставляются (единственные физические \n — границы абзацев "\n\n"),
+        # поэтому смещения _unit_map и hover не зависят от размера окна.
         self.input_text = ctk.CTkTextbox(main_frame, font=("Arial", 14),
+                                         wrap="word",
                                          fg_color=self._pal["field"], text_color=self._pal["text"],
                                          corner_radius=10,
                                          scrollbar_button_color=self._pal["scrollbar"],
@@ -305,7 +310,10 @@ class TranslatorApp(ctk.CTk):
                                          text_color=self._pal["accent"])
         self.output_label.grid(row=1, column=1, padx=10, pady=(10, 4), sticky="w")
         
+        # wrap="word" — как у поля ввода (Этап 12): перенос по ширине —
+        # визуальный, текст и смещения не меняются.
         self.output_text = ctk.CTkTextbox(main_frame, font=("Arial", 14),
+                                          wrap="word",
                                           fg_color=self._pal["field"], text_color=self._pal["text"],
                                           corner_radius=10,
                                           scrollbar_button_color=self._pal["scrollbar"],
@@ -1636,10 +1644,23 @@ class SettingsDialog(ctk.CTkToplevel):
             row += 1
             return var
 
-        # Тема
-        row_label("Тема")
+        # Схема оформления (Этап 12): подпись и короткое пояснение —
+        # назначение выбора очевидно без догадок (раньше был просто
+        # безобъяснительный дропдаун «Тема»). Механика не изменилась:
+        # выбор сохраняется в settings.json и по «Сохранить» применяется
+        # к окну и диалогу сразу, без перезапуска.
+        row_label("Схема оформления")
         self.theme_var = make_option(list(_THEME_LABELS.values()),
                                      _THEME_LABELS[s.get("theme")])
+        self.theme_note_label = ctk.CTkLabel(
+            self._scroll_frame,
+            text="Тёмная — комфортнее при слабом освещении. "
+                 "Светлая — выше яркость и контраст в освещённом "
+                 "помещении. Применяется сразу, без перезапуска.",
+            font=("Arial", 11), anchor="w", justify="left",
+            text_color=pal["muted"], wraplength=380)
+        self.theme_note_label.grid(row=row, column=1, sticky="ew", pady=(0, 2))
+        row += 1
 
         # Языки (взаимоисключающие: выбор одного меняет второе)
         row_label("Исходный язык")
