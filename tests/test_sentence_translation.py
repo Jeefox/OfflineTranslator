@@ -232,7 +232,10 @@ class FakeTranslator:
     наличии translate_stream: один общий pipeline).
     """
 
-    def __init__(self):
+    def __init__(self, model_id=None):
+        # model_id — backend-нейтральный выбор (Этап 9/10); для фейка
+        # неприменимо, но контракт вызова сохранён.
+        self.model_id = model_id
         self.chunk_calls = []   # (direction, chunk) — все технические чанки
         self.done_events = []   # (direction, src_sentence) — логические юниты
         self.stream_calls = 0

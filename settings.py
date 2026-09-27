@@ -43,6 +43,13 @@ DEFAULTS: dict = {
     "debounce_sec": 1.5,            # debounce ввода (сек.)
     "max_text_length": 5000,        # лимит символов (0 = без лимита)
     "filter_cyrillic": True,        # автоопределение направления по написанию
+    # Выбранная модель (id из model_registry, напр. "marian-en-ru").
+    # None — модель не выбрана явно: приложение разрешит дефолт для
+    # текущего направления (model_registry.ModelManager.resolve_runtime)
+    # и сохранит результат в файл. Валидность id по реестру проверяет не
+    # этот модуль (он не знает реестр), а приложение (settings.json с
+    # неизвестным id — приложение откатит на дефолт и пересохранит).
+    "model_id": None,
 }
 
 # Текущая архитектура поддерживает только EN/RU (модели Helsinki-NLP opus-mt),
@@ -162,6 +169,15 @@ def validate_value(key: str, value) -> tuple[bool, object]:
         if num is None or not (0 <= num <= 600):
             return False, DEFAULTS["slow_after_sec"]
         return True, float(num)
+    if key == "model_id":
+        # Лёгкая проверка: id — непустая строка (или None — «модель не
+        # выбрана», приложение разрешит дефолт для направления). Соотнесение
+        # с реестром (model_registry) — не здесь: settings не знает реестр.
+        if value is None:
+            return True, None
+        if not isinstance(value, str) or not value.strip():
+            return False, DEFAULTS["model_id"]
+        return True, value.strip()
 
     if key == "max_text_length":
         num = _coerce_number(value)

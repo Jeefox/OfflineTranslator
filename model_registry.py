@@ -329,6 +329,72 @@ class ModelManager:
         return None
 
     # ------------------------------------------------------------------ #
+    #  Выбор для запуска приложения (Этап 10: GUI)                        #
+    # ------------------------------------------------------------------ #
+    def resolve_runtime(self, saved_model_id: Optional[str],
+                        direction: str) -> Tuple[str, Optional[str], Optional[str]]:
+        """Разрешает сохранённый выбор модели для ЗАПУСКА приложения.
+
+        Вход: saved_model_id — сохранённый в настройках model_id
+        (None — первый запуск, выбор ещё не делался) и direction —
+        текущее направление. Лёгкая операция: дескрипторы + filesystem-
+        проверки доступности — без загрузки моделей и без сети.
+
+        Возвращает (run_id, persist_id, note):
+          run_id     — модель, которой создаётся переводчик
+                       (OfflineTranslator(model_id=run_id));
+          persist_id — какой model_id писать в настройки (None — сохранённое
+                       значение актуально, файл не трогать);
+          note       — сообщение для пользователя (None — замечаний нет),
+                       напр. «модель недоступна — использую ...».
+
+        Правила (простые и предсказуемые):
+          - сохранённый id неизвестен реестру ИЛИ модель не поддерживает
+            direction — модель по умолчанию для direction; persist_id
+            устанавливается (сохранённое значение устарело — оно
+            перезаписывается, приложение не падает);
+          - модель неизвестна для direction, если ни одна модель direction
+            не поддерживает — ModelNotFoundError;
+          - модель известна и подходит по направлению, но НЕДОСТУПНА
+            локально, а дефолт direction доступен — запускать дефолт,
+            persist_id = None (выбор пользователя НЕ меняется — модель
+            может появиться позже, напр. положат GGUF-файл), note описывает
+            фолбэк; скачивание НЕ выполняется (download-функций нет);
+          - иначе (модель доступна или фолбэка нет) — run_id = сохранённый
+            id, persist_id = None; если при этом модель недоступна и
+            фолбэка нет — сообщение о сбое даст сам запуск (clear error).
+        """
+        _validate_direction(direction)
+        if saved_model_id is not None:
+            try:
+                descriptor = self.get_model(saved_model_id)
+            except ModelNotFoundError:
+                descriptor = None
+        else:
+            descriptor = None
+        if descriptor is None or direction not in descriptor.directions:
+            # Устаревший/отсутствующий выбор — дефолт направления.
+            descriptor = self.get_default_model(direction)
+            if descriptor is None:
+                raise ModelNotFoundError(
+                    "resolve_runtime(): ни одна модель не поддерживает "
+                    "направление %r" % direction)
+            persist_id: Optional[str] = descriptor.id
+        else:
+            persist_id = None
+        run_id = descriptor.id
+        note = None
+        if not self._availability(descriptor):
+            fallback = self.get_default_model(direction)
+            if (fallback is not None and fallback.id != run_id
+                    and self._availability(fallback)):
+                run_id = fallback.id
+                note = ("Модель %s сейчас недоступна — использую %s "
+                        "(модели не скачиваются автоматически)"
+                        % (descriptor.name, fallback.name))
+        return run_id, persist_id, note
+
+    # ------------------------------------------------------------------ #
     #  Доступность (без загрузки, без сети)                               #
     # ------------------------------------------------------------------ #
     def is_model_available(self, model_id: str) -> bool:

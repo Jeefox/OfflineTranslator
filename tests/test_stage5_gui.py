@@ -71,7 +71,10 @@ class FakeTranslator:
     split_units, чанки — по chunk_words слов, done-событие — одно на
     логическое предложение (сколько чанков ни было)."""
 
-    def __init__(self):
+    def __init__(self, model_id=None):
+        # model_id — backend-нейтральный выбор (Этап 9/10); для фейка
+        # неприменимо, но контракт вызова сохранён.
+        self.model_id = model_id
         self.chunk_calls = []
         self.done_events = []
         self.lock = threading.Lock()
@@ -201,7 +204,9 @@ check("настройки: поля debounce/timeout/maxlength существу�
 check("настройки: поле глобального хоткея существует",
       dlg.hotkey_entry.winfo_exists() and dlg.hotkey_entry.winfo_width() >= 100,
       dlg.hotkey_entry.winfo_width())
-check("настройки: меню существуют (тема + 2 языка)", len(options) == 3, options)
+# Этап 10: добавлено меню выбора модели -> тема + 2 языка + модель.
+check("настройки: меню существуют (тема + 2 языка + модель)",
+      len(options) == 4, options)
 check("настройки: переключатели существуют (автоперевод + направление)",
       len(switches) == 2, switches)
 check("настройки: подписи существуют (>= 9 строк)", len(labels) >= 9, labels)

@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 
+import bisect
 import customtkinter as ctk
 import re
 import tkinter as tk
@@ -7,7 +8,12 @@ from tkinter import messagebox
 from translator import OfflineTranslator
 from settings import Settings, normalize_hotkey, validate_value
 from hotkey_agent import HotkeyAgent, PYNPUT_AVAILABLE
-from sentence_pipeline import off_to_tk
+from sentence_pipeline import line_offsets, off_to_tk, tk_to_off
+from model_registry import (
+    ModelManager,
+    ModelNotFoundError,
+    SUPPORTED_DIRECTIONS,
+)
 import queue
 import threading
 
@@ -87,6 +93,23 @@ class TranslatorApp(ctk.CTk):
 
         # Направление перевода ("en-ru" или "ru-en") — стартовое из настроек.
         self.direction = f"{self.settings.get('source_lang')}-{self.settings.get('target_lang')}"
+        # Выбор модели (Этап 10): ModelManager — backend-нейтральный реестр
+        # (дескрипторы + лёгкие filesystem-проверки; GUI не знает ни
+        # конкретные inference-бэкенды, ни их тяжёлые библиотеки).
+        # Сохранённый
+        # model_id (settings.json) разрешается против направления:
+        # неизвестная/несовместимая модель — дефолт направления (исправленное
+        # значение сохраняется), недоступная — фолбэк на доступный дефолт
+        # (выбор пользователя не меняется, note — в статусе).
+        self.model_manager = ModelManager()
+        self._active_model_id, persist_id, self._model_note = \
+            self.model_manager.resolve_runtime(
+                self.settings.get("model_id"), self.direction)
+        self.model_id = persist_id if persist_id is not None \
+            else self.settings.get("model_id")
+        if persist_id is not None:
+            self.settings.set("model_id", persist_id)
+            self.settings.save()
         # Счётчик поколений операций перевода: результат применяется к UI
         # только если поколение совпадает (защита от «устаревшего» результата
         # после очистки полей / смены направления / swap).
@@ -97,6 +120,10 @@ class TranslatorApp(ctk.CTk):
 
         # Инициализация переводчика в отдельном потоке, чтобы окно не зависло при загрузке
         self.translator = None
+        # Модель, которой реально загружен текущий self.translator
+        # (None — ещё не загружен; может отличаться от self.model_id
+        # при runtime-фолбэке на доступный дефолт, Этап 10).
+        self._translator_model_id = None
 
         # Состояние автоперевода / single-flight:
         # _translation_busy — сейчас идёт перевод;
@@ -111,26 +138,44 @@ class TranslatorApp(ctk.CTk):
         self._auto_translate_after = None
         self._translating_status_after = None
         # Инкрементальный попредложенический перевод (Этап 4; семантика
-        # подсветки Этапа 5): _hl_src_tag/_hl_dst_tag — теги подсветки
-        # ТЕКУЩЕЙ пары «предложение k ↔ перевод k» в полях (мягкий фон
-        # текущей палитры; готовые предложения — обычный фон, подсветка
-        # снимается при завершении/очистке/смене направления/swap).
+        # подсветки Этапа 5; hover-сопоставление Этапа 10).
+        # _hl_src_tag/_hl_dst_tag — теги подсветки ТЕКУЩЕЙ пары
+        # «предложение k ↔ перевод k» в полях (мягкий фон текущей палитры).
+        # В любой момент подсвечена ровно ОДНА пара (активный unit):
+        # _hl_unit — индекс подсвеченного юнита (None — ничего не
+        # подсвечено). _stream_unit — последний ЗАВЕРШЁННЫЙ стрим-юнит
+        # (для восстановления подсветки после hover, если перевод ещё
+        # идёт; автопоказ _show_current_pair тоже следует за ним).
+        # _unit_map — mapping пайплайна
+        # «юнит k ↔ перевод k»: (src_start, src_end, dst_start, dst_end)
+        # по завершённым юнитам — строится ВРЕМЯ перевода (смещения src —
+        # из StreamUnit, dst — из фактической вставки в поле вывода) и
+        # используется hover'ом; сопоставление по ТЕКСТУ не делается.
         # Одно логическое предложение = одна единица синхронизации UI:
         # сколько бы технических chunks ни было внутри предложения,
         # пара продвигается ровно один раз на предложение (на "done").
-        # _hl_last_src/_hl_last_dst — символьные диапазоны текущего
-        # (последнего завершённого) юнита в исходном поле / поле вывода.
         self._hl_src_tag = "hl_src"
         self._hl_dst_tag = "hl_dst"
-        self._hl_last_src = None
-        self._hl_last_dst = None
-        # Синхронная прокрутка полей (Этап 5): _syncing_scroll — защита
-        # от рекурсии (пока код программно выставляет вид партнёра,
-        # обратный callback не синхронизирует снова); _auto_follow —
-        # автопоказ текущей пары при переводе (выключается, когда
-        # пользователь прокручивает вручную; включается заново при
+        self._hl_unit = None
+        self._stream_unit = None
+        self._unit_map = []
+        # Начало src/dst-диапазона каждого юнита (для bisect в hover):
+        # сортированы по построению — юниты добавляются по порядку.
+        self._src_starts = []
+        self._dst_starts = []
+        # Кэш начал строк для hover (id(внутреннего Text) -> (len, offs)).
+        self._hover_cache = {}
+        # Синхронная прокрутка полей (Этап 5; исправление Этапа 10):
+        # _syncing_scroll — защита от рекурсии (пока код программно
+        # выставляет вид партнёра через yview_moveto, callback партнёра
+        # не синхронизирует обратно); _sync_last — последняя yview-фракция
+        # каждого поля (инкрементальная синхронизация по дельте доли
+        # документа — фикс «прокрутка вверх не синхронизируется»);
+        # _auto_follow — автопоказ текущей пары при переводе (выключается,
+        # когда пользователь прокручивает вручную; включается заново при
         # следующем запуске перевода).
         self._syncing_scroll = False
+        self._sync_last = {}
         self._auto_follow = True
         # Текущий статус (вид, текст) — переотрисовывается при смене темы.
         self._status = ("busy", "Инициализация нейросети...")
@@ -146,21 +191,57 @@ class TranslatorApp(ctk.CTk):
         # Начинаем опрос очереди в главном потоке.
         self._process_gui_queue()
 
-        # Запускаем загрузку модели в фоне: все виджеты уже созданы,
-        # и сам поток не обращается к GUI (только к очереди).
-        threading.Thread(target=self.init_translator, daemon=True).start()
+        # Запускаем загрузку выбранной модели в фоне (Этап 10): все
+        # виджеты уже созданы, и сам поток не обращается к GUI (только к
+        # self.translator и очереди).
+        self._start_model_load()
 
         # При закрытии окна остановим глобальный агент хоткея.
         self.protocol("WM_DELETE_WINDOW", self._on_window_close)
 
     def init_translator(self):
-        """Загружает модели в фоновом потоке; результат передаётся в UI через очередь.
-        Поток не обращается к виджетам (нет гонки с setup_ui и с главным потоком)."""
+        """Загружает выбранную модель в фоновом потоке (Этап 10).
+
+        Тот же механизм, что и при старте: _start_model_load."""
+        self._start_model_load()
+
+    def _start_model_load(self):
+        """(Пере)загружает переводчик в фоновом потоке (Этап 10).
+
+        Пока идёт загрузка self.translator = None — это же поведение, что
+        при старте: кнопка «Перевести» отключена, _start_translation_internal
+        ждёт («Ожидание загрузки моделей...»), автоперевод после init_done
+        отработает отложенно. Поток не обращается к виджетам (только к
+        self.translator и очереди) — threading-модель старта сохранена.
+        """
+        # Счётчик загрузок: устаревший worker (после новой смены
+        # направления/модели) не должен переопределять свежий результат.
+        self._load_seq = getattr(self, "_load_seq", 0) + 1
+        self.translator = None
+        self._set_status("busy", "Инициализация модели...")
+        threading.Thread(target=self._init_translator_worker,
+                         args=(self._load_seq,), daemon=True).start()
+
+    def _init_translator_worker(self, load_seq: int):
+        """Фоновый поток: OfflineTranslator(model_id=...).
+
+        GUI не знает бэкенды: конкретная модель передаётся через
+        backend-нейтральный model_id (реестр, Этап 8/9); фасад сам
+        собирает движок. Ошибка — в очередь (clear error, без traceback).
+        Устаревшая загрузка (load_seq != self._load_seq — за время
+        инициализации сменили направление/модель) не применяется.
+        """
         try:
-            self.translator = OfflineTranslator()
-            self._gui_queue.put(("init_done",))
+            translator = OfflineTranslator(model_id=self._active_model_id)
         except Exception as e:
             self._gui_queue.put(("init_error", str(e)))
+            return
+        if load_seq != self._load_seq:
+            # Во время загрузки запустили новую — этот результат не нужен.
+            return
+        self.translator = translator
+        self._translator_model_id = self._active_model_id
+        self._gui_queue.put(("init_done",))
 
     def setup_ui(self):
         # Главный контейнер
@@ -397,7 +478,7 @@ class TranslatorApp(ctk.CTk):
                 # и в окне «Настройки»).
                 self._set_status("busy", f"Готово. Глобальный хоткей недоступен: {self._agent_error}")
             else:
-                self._set_status("ready")
+                self._set_status("ready", self._ready_status_text())
         elif kind == "init_error":
             # Загрузка не удалась: показать ошибку, кнопка остаётся отключённой.
             self._set_status("error", f"Ошибка загрузки: {message[1]}")
@@ -419,16 +500,14 @@ class TranslatorApp(ctk.CTk):
                     self.output_text.insert("1.0", result)
                 finally:
                     self._syncing_scroll = False
-                # Замена текста стёрла тег подсветки перевода — переставляем
-                # текущую пару на новый текст (диапазоны точны: результат
-                # совпадает с накопленным стримом; если пользователь
-                # вмешался, поколение уже устарело и мы сюда не пришли).
-                if (self._hl_last_src is not None
-                        and self._hl_last_dst is not None):
-                    self._set_highlight(self._hl_last_src[0],
-                                        self._hl_last_src[1],
-                                        self._hl_last_dst[0],
-                                        self._hl_last_dst[1])
+                # Замена текста стёрла теги подсветки — переставляем
+                # активный юнит на новый текст (dst-диапазоны из
+                # self._unit_map точны: результат совпадает с накопленным
+                # стримом; _add_highlight_range на всякий случай зажимает
+                # смещения в длину. Если пользователь вмешался, поколение
+                # уже устарело и мы сюда не пришли).
+                if self._hl_unit is not None:
+                    self._highlight_unit(self._hl_unit)
                     # Оба поля подвести к последней паре (вид вывода после
                     # замены сбрасывается наверх; исходное остаётся на месте).
                     self._show_current_pair()
@@ -510,21 +589,18 @@ class TranslatorApp(ctk.CTk):
         self._pending_text = None
         self.input_text.delete("1.0", "end")
         self.output_text.delete("1.0", "end")
-        self._clear_highlight()
+        # Поля пусты — накопленное сопоставление юнитов недействительно.
+        self._reset_sentence_mapping()
         # Запущенный перевод (если есть) больше не соответствует состоянию UI — помечаем его устаревшим.
         self._translation_generation += 1
         self._set_status("ready")
 
     def change_direction(self, value: str):
-        """Сменяет направление перевода и обновляет подписи полей."""
-        # Ожидающий автоперевод отменяется: смена направления — не причина
-        # для «лишнего» перевода (направление поменялось, текст тот же).
-        self._cancel_auto()
-        self._pending_text = None
-        # Перевод, запущенный до смены направления, был для другого направления — помечаем его устаревшим.
-        self._translation_generation += 1
-        self._clear_highlight()
-        self._apply_direction("ru-en" if value == "RU → EN" else "en-ru")
+        """Сменяет направление перевода (меню) и обновляет подписи полей.
+
+        Смена модели под новое направление (если нужна) — в _set_direction
+        (Этап 10)."""
+        self._set_direction("ru-en" if value == "RU → EN" else "en-ru")
 
     def swap_fields(self):
         """Меняет содержимое полей и направление перевода местами."""
@@ -543,8 +619,9 @@ class TranslatorApp(ctk.CTk):
             self.input_text.insert("1.0", output_text)
         if input_text:
             self.output_text.insert("1.0", input_text)
-        # Содержимое полей изменилось — старые диапазоны подсветки недействительны.
-        self._clear_highlight()
+        # Содержимое полей изменилось — накопленное сопоставление юнитов
+        # (и подсветка) недействительно.
+        self._reset_sentence_mapping()
 
         # Содержимое полей изменилось — запущенный перевод (если есть) устарел.
         self._translation_generation += 1
@@ -574,8 +651,109 @@ class TranslatorApp(ctk.CTk):
         self.status_label.configure(text=text, text_color=color)
 
     # ------------------------------------------------------------------ #
-    #  Подсветка текущей пары предложений (Этап 4)                       #
-    # ------------------------------------------------------------------
+    #  Модель: отображение и применение (Этап 10)                        #
+    # ------------------------------------------------------------------ #
+    def _model_short_name(self) -> str:
+        """Короткое отображаемое имя текущей (запущенной) модели:
+        display name без происхождения в скобках."""
+        descriptor = self.model_manager.get_model(self._active_model_id)
+        return descriptor.name.split(" (")[0]
+
+    def _ready_status_text(self) -> str:
+        """Статус «готово» с именем модели (Этап 10): пользователь видит,
+        какой моделью работает приложение. note (фолбэк/смена) — впереди."""
+        try:
+            text = "Готов к переводу! (Работает офлайн, модель: %s)" % \
+                self._model_short_name()
+        except ModelNotFoundError:
+            text = READY_TEXT
+        if self._model_note:
+            note, self._model_note = self._model_note, None
+            text = "%s. %s" % (note, text)
+        return text
+
+    def _update_model_display(self):
+        """Подпись под заголовком: направление + текущая модель (Этап 10)."""
+        dir_label = "RU → EN" if self.direction == "ru-en" else "EN → RU"
+        try:
+            model = self._model_short_name()
+        except ModelNotFoundError:
+            model = "—"
+        self.header_subtitle.configure(
+            text="%s · %s · работает офлайн" % (dir_label, model))
+
+    def _set_direction(self, direction: str):
+        """Программная смена направления (агент хоткея, настройки, меню).
+
+        Этап 10 — направление учитывает модель: если текущая модель не
+        поддерживает новое направление — автоматически выбирается дефолт
+        направления (сохраняется в настройки) и переводчик (пере)загружается
+        в фоне. Приложение никогда не «молча» остаётся на несовместимой
+        модели: выбранная через model_id модель в неподдерживаемом
+        направлении выдаёт явную ошибку, поэтому смена обязательна.
+        """
+        self._cancel_auto()
+        self._pending_text = None
+        self._translation_generation += 1
+        self._reset_sentence_mapping()
+        self._apply_direction(direction)
+        run_id, persist_id, note = self.model_manager.resolve_runtime(
+            self.model_id, direction)
+        if persist_id is not None:
+            # Сохранённая модель не подходит под новое направление.
+            old_name = None
+            try:
+                old_name = self.model_manager.get_model(self.model_id).name
+            except ModelNotFoundError:
+                pass
+            new_name = self.model_manager.get_model(persist_id).name
+            self.model_id = persist_id
+            self.settings.set("model_id", persist_id)
+            self.settings.save()
+            note = ("Модель %s не поддерживает направление %s — использую %s"
+                    % (old_name or "—",
+                       "RU→EN" if direction == "ru-en" else "EN→RU",
+                       new_name))
+        self._active_model_id = run_id
+        self._model_note = note
+        self._update_model_display()
+        if run_id != self._translator_model_id:
+            self._start_model_load()
+
+    def _set_model(self, model_id: str):
+        """Явная смена модели пользователем (диалог «Настройки», Этап 10).
+
+        Минимальный безопасный механизм: та же фоновая (пере)загрузка, что
+        при старте (_start_model_load); идущий перевод помечается устаревшим
+        (generation). Выбор сохраняется в настройки (model_id) — переживает
+        перезапуск. Недоступная модель (напр. отсутствует локальный файл
+        модели) не падает: resolve_runtime подставляет доступный дефолт
+        с понятным
+        сообщением в статусе, приложение остаётся работоспособным."""
+        if model_id == self._active_model_id and \
+                model_id == self.model_id:
+            return
+        self._cancel_auto()
+        self._pending_text = None
+        self._translation_generation += 1
+        self._reset_sentence_mapping()
+        run_id, persist_id, note = self.model_manager.resolve_runtime(
+            model_id, self.direction)
+        self.model_id = persist_id if persist_id is not None else model_id
+        self.settings.set("model_id", self.model_id)
+        self.settings.save()
+        self._active_model_id = run_id
+        self._model_note = note
+        self._update_model_display()
+        if run_id != self._translator_model_id:
+            self._start_model_load()
+
+    # ------------------------------------------------------------------ #
+    #  Подсветка пары «предложение ↔ его перевод» (Этап 4, Этап 10)     #
+    #  Модель Этапа 10: ОДНА активная пара (unit), hover в обоих       #
+    #  направлениях, сопоставление по смещениям пайплайна (по тексту  #
+    #  — нет).                                                         #
+    # ------------------------------------------------------------------ #
     def _setup_highlight_tags(self):
         """Настраивает теги подсветки в обоих полях (мягкий фон палитры).
 
@@ -587,18 +765,41 @@ class TranslatorApp(ctk.CTk):
                          (self.output_text._textbox, self._hl_dst_tag)):
             box.tag_configure(tag, background=self._pal["hl"])
 
-    def _set_highlight(self, src_start, src_end, dst_start, dst_end):
-        """Подсвечивает текущую пару «предложение ↔ его перевод».
+    def _setup_hover_sync(self):
+        """Hover/клик в любом поле подсвечивает пару в обоих полях (Этап 10).
 
-        Диапазоны — символьные смещения в тексте соответствующего поля;
-        None — диапазон не подсвечивать. Вызывать только из главного
-        потока. В любой момент подсвечена ровно одна пара; готовые
-        предложения — с обычным фоном.
+        Биндим на внутренний Text (_textbox): именно он получает события
+        мыши. Обработчики не возвращают "break" — клики, курсор и
+        выделение работают штатно, подсветка — «побочный» эффект того же
+        события. Все действия — в главном потоке (Tk-события приходят
+        сюда).
+        """
+        for box, pane in ((self.input_text, "src"),
+                          (self.output_text, "dst")):
+            tb = box._textbox
+            tb.bind("<Motion>", lambda e, p=pane: self._on_hover_move(p, e),
+                    add="+")
+            tb.bind("<Button-1>", lambda e, p=pane: self._on_hover_move(p, e),
+                    add="+")
+            tb.bind("<Leave>", lambda e, p=pane: self._on_hover_leave(p, e),
+                    add="+")
+
+    def _highlight_unit(self, unit_idx):
+        """Подсвечивает пару юнита unit_idx в обоих полях (активный unit).
+
+        Диапазоны — из self._unit_map (смещения пайплайна). Вызывать
+        только из главного потока. unit_idx вне диапазона — как
+        _clear_pair(). Старая подсветка снимается до постановки новой.
         """
         in_tb = self.input_text._textbox
         out_tb = self.output_text._textbox
         in_tb.tag_remove(self._hl_src_tag, "1.0", "end")
         out_tb.tag_remove(self._hl_dst_tag, "1.0", "end")
+        if unit_idx is None or not (0 <= unit_idx < len(self._unit_map)):
+            self._hl_unit = None
+            return
+        src_start, src_end, dst_start, dst_end = self._unit_map[unit_idx]
+        self._hl_unit = unit_idx
         self._add_highlight_range(in_tb, self._hl_src_tag, src_start, src_end)
         self._add_highlight_range(out_tb, self._hl_dst_tag, dst_start, dst_end)
 
@@ -617,17 +818,102 @@ class TranslatorApp(ctk.CTk):
         except tk.TclError:
             pass
 
-    def _clear_highlight(self):
-        """Снимает подсветку предложений из обоих полей и сбрасывает
-        запомненный диапазон (вызывать только из главного потока)."""
+    def _clear_pair(self):
+        """Снимает подсветку активного юнита из обоих полей (само состояние
+        _hl_unit сбрасывается). Вызывать только из главного потока."""
         for box, tag in ((self.input_text._textbox, self._hl_src_tag),
                          (self.output_text._textbox, self._hl_dst_tag)):
             try:
                 box.tag_remove(tag, "1.0", "end")
             except tk.TclError:
                 pass
-        self._hl_last_src = None
-        self._hl_last_dst = None
+        self._hl_unit = None
+
+    def _clear_highlight(self):
+        """Снимает подсветку пары (alias для _clear_pair; имя сохранено
+        для существующих мест вызова). Mapping юнитов при этом НЕ
+        сбрасывается: после завершения перевода hover продолжает
+        сопоставлять предложения по накопленным смещениям."""
+        self._clear_pair()
+
+    def _reset_sentence_mapping(self):
+        """Полный сброс сопоставления «предложение ↔ перевод» и подсветки.
+
+        Вызывается при операциях, делающих накопленные смещения
+        недействительными: очистка полей, swap, смена направления, смена
+        модели, изменение исходного текста, начало нового стрима.
+        """
+        self._unit_map = []
+        self._src_starts = []
+        self._dst_starts = []
+        self._hl_unit = None
+        self._stream_unit = None
+        self._clear_pair()
+
+    # -- hover-механика (Этап 10) --------------------------------------- #
+    def _hover_cache_line_offsets(self, tb):
+        """Начала строк текста поля с кэшем: пересчёт только при изменении
+        длины текста (для long text <Motion> не должен сканировать весь
+        текст на каждое движение мыши)."""
+        text = tb.get("1.0", "end-1c")
+        cached = self._hover_cache.get(id(tb))
+        if cached is None or cached[0] != len(text):
+            cached = (len(text), line_offsets(text))
+            self._hover_cache[id(tb)] = cached
+        return cached[1]
+
+    def _find_unit_at(self, pane: str, off: int):
+        """Индекс юнита, чей диапазон (pane "src"/"dst") содержит
+        символьное смещение off; вне предложений — None.
+
+        Только смещения пайплайна (bisect по отсортированным началам) —
+        сопоставление по тексту намеренно не используется.
+        """
+        starts = self._src_starts if pane == "src" else self._dst_starts
+        if not starts:
+            return None
+        i = bisect.bisect_right(starts, off) - 1
+        if i < 0:
+            return None
+        entry = self._unit_map[i]
+        lo, hi = (entry[0], entry[1]) if pane == "src" else (entry[2], entry[3])
+        if lo <= off < hi:
+            return i
+        return None
+
+    def _on_hover_move(self, pane: str, event):
+        """Мышь двигается/клик в поле: подсвечиваем пару под курсором
+        (в обоих полях — и своё, и поле-партнёр)."""
+        tb = event.widget
+        try:
+            # str(): index() может вернуть Tcl_Obj (зависит от версии
+            # tkinter), а не str.
+            idx = str(tb.index("@%d,%d" % (event.x, event.y)))
+            line_offs = self._hover_cache_line_offsets(tb)
+            line_s, col_s = idx.split(".", 1)
+            off = line_offs[int(line_s) - 1] + int(col_s)
+        except (tk.TclError, ValueError, IndexError):
+            return
+        unit = self._find_unit_at(pane, off)
+        if unit is None:
+            # Мышь в «зазоре» между предложениями (разделители не входят
+            # ни в один юнит) — пары под курсором нет.
+            self._hover_restore()
+        elif unit != self._hl_unit:
+            self._highlight_unit(unit)
+
+    def _on_hover_leave(self, pane: str, event):
+        """Мышь ушла из поля: пара под курсором больше нет."""
+        self._hover_restore()
+
+    def _hover_restore(self):
+        """Состояние после «мыши вне предложений»: во время перевода —
+        назад на последний завершённый стрим-юнит (подсветка стрима
+        восстанавливается), иначе — подсветка снимается."""
+        if self._translation_busy and self._stream_unit is not None:
+            self._highlight_unit(self._stream_unit)
+        else:
+            self._clear_pair()
 
     # ------------------------------------------------------------------ #
     #  Синхронная прокрутка исходного/выводного полей (Этап 5)            #
@@ -674,6 +960,8 @@ class TranslatorApp(ctk.CTk):
             sb_canvas = box._y_scrollbar._canvas
             for seq in ("<Button-1>", "<B1-Motion>"):
                 sb_canvas.bind(seq, self._on_user_scroll, add="+")
+        # Hover/клик в любом поле подсвечивает пару в обоих полях (Этап 10).
+        self._setup_hover_sync()
 
     def _make_sync_view_command(self, box, partner_tb):
         """yscrollcommand одного поля: обновить собственный скроллбар и
@@ -689,8 +977,18 @@ class TranslatorApp(ctk.CTk):
 
     def _sync_partner_view(self, partner_tb, first, last):
         """Выставляет в поле-партнёре ту же относительную позицию
-        документа, что и в исходном поле. Без рекурсии: _syncing_scroll
-        блокирует обратную синхронизацию из callback'а партнёра."""
+        документа, что и в исходном поле.
+
+        Всегда через yview_moveto() (фикс Этапа 10): see() вызывает
+        yscrollcommand АСИНХРОННО — после перерисовки, когда защита
+        _syncing_scroll уже снята; это порождало обратную синхронизацию
+        (feedback loop) и «просадку» синхронизации при прокрутке вверх.
+        yview_moveto() вызывает yscrollcommand партнёра СИНХРОННО, пока
+        защита активна — обратная синхронизация гарантированно
+        заблокирована, без зависимости от таймингов callback'ов.
+        Верх — доля 0.0; низ — доля, близкая к 1 (yview_moveto зажимает
+        значение в максимально прокручиваемое — ровно низ документа).
+        """
         if self._syncing_scroll:
             return
         try:
@@ -701,22 +999,18 @@ class TranslatorApp(ctk.CTk):
         if f < 0.0 or l < f:
             return
         if f <= 5e-4:
-            index = "1.0"        # поле вверху -> партнёр вверху
-        elif f + l >= 1.0 - 5e-4:
-            index = "end-1c"     # поле внизу -> партнёр внизу
+            target = 0.0            # поле вверху -> партнёр вверху
+        elif l >= 1.0 - 5e-4:
+            # Поле внизу: yview last — доля ДОКУМЕНТА ВЫШЕ НИЗА окна
+            # (last >= first; f+l >= 1 в середине — НОРМА, проверять
+            # нельзя), поэтому низ определяется по last == 1.
+            target = 1.0 - 5e-4     # поле внизу -> партнёр внизу
         else:
             # Середина документа: та же доля (относительная позиция).
-            self._syncing_scroll = True
-            try:
-                partner_tb.yview_moveto(f)
-            except tk.TclError:
-                pass
-            finally:
-                self._syncing_scroll = False
-            return
+            target = f
         self._syncing_scroll = True
         try:
-            partner_tb.see(index)
+            partner_tb.yview_moveto(target)
         except tk.TclError:
             pass
         finally:
@@ -729,11 +1023,17 @@ class TranslatorApp(ctk.CTk):
         self._auto_follow = False
 
     def _show_current_pair(self):
-        """Автопоказ: подводит текущую пару в видимую область обоих полей
-        (только во время перевода, если пользователь не прокрутил сам)."""
-        if (not self._auto_follow
-                or self._hl_last_src is None or self._hl_last_dst is None):
+        """Автопоказ: подводит текущую стрим-пару в видимую область обоих
+        полей (только во время перевода, если пользователь не прокрутил сам).
+
+        Подводим СТРИМ-юнит (прогресс перевода), а не любой активный
+        _hl_unit: hover — инициатива пользователя, автопоказу не следует
+        уводить вид от обработываемого предложения.
+        """
+        if not self._auto_follow or self._stream_unit is None:
             return
+        src_start, _src_end, dst_start, _dst_end = \
+            self._unit_map[self._stream_unit]
         in_tb = self.input_text._textbox
         out_tb = self.output_text._textbox
         in_text = in_tb.get("1.0", "end-1c")
@@ -742,8 +1042,8 @@ class TranslatorApp(ctk.CTk):
         # сработают, но обратную синхронизацию не запустят.
         self._syncing_scroll = True
         try:
-            in_tb.see(off_to_tk(in_text, self._hl_last_src[0]))
-            out_tb.see(off_to_tk(out_text, self._hl_last_dst[0]))
+            in_tb.see(off_to_tk(in_text, src_start))
+            out_tb.see(off_to_tk(out_text, dst_start))
         except tk.TclError:
             pass
         finally:
@@ -786,11 +1086,17 @@ class TranslatorApp(ctk.CTk):
             dst_start = 0
         dst_end = dst_start + len(unit.translation)
         # Пара продвигается как единое целое: (предложение N, перевод N).
-        # Смещения dst вычисляются из фактически вставленного текста,
-        # поэтому соответствие original N <-> translated N точное.
-        self._hl_last_src = (unit.src_start, unit.src_end)
-        self._hl_last_dst = (dst_start, dst_end)
-        self._set_highlight(unit.src_start, unit.src_end, dst_start, dst_end)
+        # src-смещения — из StreamUnit (пайплайн), dst-смещения — из
+        # фактически вставленного текста: соответствие original N <->
+        # translated N точное и используется и для подсветки, и для
+        # hover-сопоставления (Этап 10) — сопоставление по тексту нигде
+        # не применяется.
+        self._unit_map.append((unit.src_start, unit.src_end,
+                               dst_start, dst_end))
+        self._src_starts.append(unit.src_start)
+        self._dst_starts.append(dst_start)
+        self._stream_unit = len(self._unit_map) - 1
+        self._highlight_unit(self._stream_unit)
         self._show_current_pair()
         if total > 1:
             self._set_status("busy", f"Переведено {done}/{total} предложений…")
@@ -932,7 +1238,8 @@ class TranslatorApp(ctk.CTk):
             self._pending_text = None
             self._translation_generation += 1
             self.output_text.delete("1.0", "end")
-            self._clear_highlight()
+            # Исходный текст пуст — накопленное сопоставление недействительно.
+            self._reset_sentence_mapping()
             self._set_status("ready")
             return
         if self._translation_busy:
@@ -949,7 +1256,8 @@ class TranslatorApp(ctk.CTk):
             current = self.input_text.get("1.0", "end-1c")
             if self._active_text is None or current != self._active_text:
                 self._translation_generation += 1
-                self._clear_highlight()
+                # Смещения в исходном тексте изменились — mapping сбрасывается.
+                self._reset_sentence_mapping()
         self._schedule_autotranslate()
 
     def _schedule_autotranslate(self):
@@ -966,7 +1274,8 @@ class TranslatorApp(ctk.CTk):
             self._pending_text = None
             self._translation_generation += 1
             self.output_text.delete("1.0", "end")
-            self._clear_highlight()
+            # Исходный текст пуст — накопленное сопоставление недействительно.
+            self._reset_sentence_mapping()
             self._set_status("ready")
             return
         limit = int(self.settings.get("max_text_length") or 0)
@@ -1056,7 +1365,9 @@ class TranslatorApp(ctk.CTk):
         # подсветка не должны смешиваться с новым стримом).
         if getattr(self.translator, "translate_stream", None) is not None:
             self.output_text.delete("1.0", "end")
-            self._clear_highlight()
+            # Новый стрим — mapping строится заново (старые смещения
+            # относятся к предыдущему переводу).
+            self._reset_sentence_mapping()
         # Отмечаем начало новой операции: если до завершения потока пользователь
         # изменит состояние UI (очистка/направление/swap), результат не будет применён.
         self._translation_generation += 1
@@ -1137,13 +1448,6 @@ class TranslatorApp(ctk.CTk):
             self.attributes("-topmost", False)
         except tk.TclError:
             pass
-
-    def _set_direction(self, direction: str):
-        """Программная смена направления (агент хоткея, настройки)."""
-        self._cancel_auto()
-        self._pending_text = None
-        self._translation_generation += 1
-        self._apply_direction(direction)
 
     def _open_settings(self):
         """Открывает окно «Настройки» (одно окно за раз)."""
@@ -1314,6 +1618,9 @@ class SettingsDialog(ctk.CTkToplevel):
                                   dropdown_text_color=pal["text"])
             m.grid(row=row, column=1, sticky="ew", pady=(0, 2))
             self._make_resizable(m, min_width=170)
+            # Виджет меню запоминаем для вызывающего кода (например,
+            # переполнение списка моделей при смене направления).
+            self._last_option_menu = m
             row += 1
             return var
 
@@ -1343,6 +1650,24 @@ class SettingsDialog(ctk.CTkToplevel):
         self.target_lang_var = make_option(list(_LANG_LABELS.values()),
                                            _LANG_LABELS[s.get("target_lang")],
                                            self._on_target_lang)
+
+        # Модель (Этап 10): список строится из ModelManager (дескрипторы +
+        # ЛЁГКАЯ проверка локальной доступности) — никаких импортов/создания
+        # inference-бэкендов и тяжёлых библиотек (torch/transformers и
+        # т.п.) и обращений к сети в диалоге нет. Выбор применяется только по
+        # «Сохранить» — через app._set_model (resolve_runtime + персистентность
+        # + фоновая загрузка, если нужна).
+        row_label("Модель")
+        self.model_var = make_option([], "", self._on_model_selected)
+        self.model_menu = self._last_option_menu
+        self.model_note_label = ctk.CTkLabel(
+            self._scroll_frame, text="", font=("Arial", 11), anchor="w",
+            justify="left", text_color=pal["muted"], wraplength=380)
+        self.model_note_label.grid(row=row, column=1, sticky="ew",
+                                   pady=(0, 2))
+        row += 1
+        self._model_label_to_id = {}
+        self._refresh_model_menu()
 
         # Автоперевод и тайминги
         row_label("Автоперевод")
@@ -1462,6 +1787,9 @@ class SettingsDialog(ctk.CTkToplevel):
             self.target_lang_var.set(other)
         finally:
             self._syncing = False
+        # Направление изменилось — список моделей актуализируется
+        # (неподдерживаемые помечаются, при необходимости — дефолт).
+        self._refresh_model_menu()
 
     def _on_target_lang(self, value):
         if self._syncing:
@@ -1472,6 +1800,95 @@ class SettingsDialog(ctk.CTkToplevel):
             self.source_lang_var.set(other)
         finally:
             self._syncing = False
+        self._refresh_model_menu()
+
+    # ------------------------------------------------------------------ #
+    #  Выбор модели (Этап 10) — лёгкий, backend-нейтральный              #
+    # ------------------------------------------------------------------ #
+    def _model_direction(self):
+        """Текущее направление диалога по языковым меню (меню
+        взаимоисключающие → всегда "en-ru" или "ru-en")."""
+        return (f"{_LANG_FROM_LABEL[self.source_lang_var.get()]}-"
+                f"{_LANG_FROM_LABEL[self.target_lang_var.get()]}")
+
+    def _model_labels(self, direction: str):
+        """Пары (label опции, model id) в порядке реестра (детерминированно).
+
+        Label показывает отображаемое имя и ЛЁГКУЮ проверку доступности
+        (ModelManager.is_model_available — filesystem, без загрузки
+        моделей и без сети). Модель, не поддерживающая текущее
+        направление, остаётся в списке с явным маркером: пользователь
+        видит, что именно будет заменено дефолтом при сохранении.
+        """
+        manager = self.app.model_manager
+        labels = []
+        for desc in manager.list_models():
+            status = ("доступна" if manager.is_model_available(desc.id)
+                      else "недоступна локально")
+            label = f"{desc.name} — {status}"
+            if not desc.supports_direction(direction):
+                label += " (направление не поддерживается)"
+            labels.append((label, desc.id))
+        return labels
+
+    def _refresh_model_menu(self):
+        """(Пере)заполняет меню моделей под текущее направление и сохраняет
+        текущий выбор, если он остался в списке; иначе — модель по
+        умолчанию для направления (первая подходящая в реестре)."""
+        direction = self._model_direction()
+        labels = self._model_labels(direction)
+        self._model_label_to_id = dict(labels)
+        current = self.model_var.get()
+        selected = current if current in self._model_label_to_id else ""
+        if not selected:
+            default = self.app.model_manager.get_default_model(direction)
+            for label, mid in labels:
+                if default is not None and mid == default.id:
+                    selected = label
+                    break
+            if not selected and labels:
+                selected = labels[0][0]
+        self.model_menu.configure(values=[label for label, _id in labels])
+        self.model_var.set(selected)
+        self._update_model_note()
+
+    def _on_model_selected(self, _value):
+        """Пользователь выбрал модель в дропдауне — обновляем пояснение."""
+        self._update_model_note()
+
+    def _update_model_note(self):
+        """Строка под меню модели: что произойдёт с выбранной моделью при
+        сохранении/запуске (только лёгкие проверки, без загрузки моделей)."""
+        pal = self.app._pal
+        manager = self.app.model_manager
+        label = self.model_var.get()
+        model_id = self._model_label_to_id.get(label)
+        if not model_id:
+            self.model_note_label.configure(text="Модель не выбрана",
+                                            text_color=pal["muted"])
+            return
+        direction = self._model_direction()
+        desc = manager.get_model(model_id)
+        if not desc.supports_direction(direction):
+            default = manager.get_default_model(direction)
+            self.model_note_label.configure(
+                text=(f"Не поддерживает направление. При сохранении будет "
+                      f"использована модель по умолчанию: "
+                      f"{default.name if default is not None else '—'}"),
+                text_color=pal["pending"])
+        elif manager.is_model_available(model_id):
+            self.model_note_label.configure(text="Доступна",
+                                            text_color=pal["success"])
+        else:
+            default = manager.get_default_model(direction)
+            fallback = (f" До её доступности будет использоваться "
+                        f"модель по умолчанию: {default.name}"
+                        if default is not None and default.id != model_id
+                        else "")
+            self.model_note_label.configure(
+                text="Недоступна локально. Автоматическая загрузка "
+                     "модели не выполняется." + fallback,
+                text_color=pal["pending"])
 
     # ------------------------------------------------------------------ #
     #  Запись хоткея (нажмите сочетание)                                  #
@@ -1594,7 +2011,17 @@ class SettingsDialog(ctk.CTkToplevel):
         # Применяем без перезапуска:
         ctk.set_appearance_mode(self.app.settings.get("theme"))
         self.app._set_theme(self.app.settings.get("theme"))
+        # Направление ПЕРВЫМ (далее resolve_runtime в _set_model работает
+        # уже с новым направлением).
         self.app._set_direction(f"{normalized['source_lang']}-{normalized['target_lang']}")
+        # Модель (Этап 10): выбор из диалога — через app._set_model
+        # (resolve_runtime + персистентность + фоновая загрузка, если
+        # запуск использует другую модель). Неизменённый выбор — no-op.
+        # Бэкенды в этом месте диалога по-прежнему не импортируются:
+        # загрузка модели — фоновое действие приложения.
+        model_id = self._model_label_to_id.get(self.model_var.get())
+        if model_id != self.app.settings.get("model_id"):
+            self.app._set_model(model_id)
         self.app._start_hotkey_agent()
         self.app._set_status("ready", "Настройки сохранены")
         self._on_close()
