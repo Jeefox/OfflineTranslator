@@ -518,6 +518,9 @@ bad = os.path.join(TMP, "bad_dict.json")
 with open(bad, "w", encoding="utf-8") as f:
     f.write("{broken")
 t.dictionary_path = bad
+# Этап 13: кэш переводов юнитов очищаем — сценарий должен дойти до
+# inference («hello world» выше уже закэширован тем же экземпляром).
+t.translation_cache.clear()
 reset()
 r = t.translate("hello world", "en-ru")
 check("t_broken_dict_graceful", len(CALLS) == 1, str(CALLS))

@@ -370,6 +370,10 @@ check("svc_llama_dict_priority",
       r == "рабочее пространство" and not fake7.completions,
       (r, str(fake7.completions)))
 # Ошибки inference: translate() оборачивает в «Ошибка перевода: ...»
+# Этап 13: кэш переводов юнитов очищаем — сценарии должны дойти до
+# inference («Hello world.» выше уже закэширован; поведение кэша —
+# tests/test_stage13_translation_cache.py). Ошибки в кэш не попадают.
+svc.translation_cache.clear()
 fake7.raise_error = RuntimeError("model crash")
 r = svc.translate("Hello world.", "en-ru")
 check("svc_llama_error_wrap",

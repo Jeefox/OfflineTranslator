@@ -126,6 +126,10 @@ def reset():
     ENQ.clear()
     TOK.clear()
     GEN.clear()
+    # Этап 13: инкрементальный кэш переводов юнитов — каждый сценарий
+    # измеряет свежий inference (как до кэша); поведение кэша покрыто
+    # tests/test_stage13_translation_cache.py.
+    t.translation_cache.clear()
 
 def norm(s):
     return re.sub(r"\s+", "", s)
@@ -196,7 +200,12 @@ check("long_ru_multi_chunk", len(CALLS) >= 2, str(len(CALLS)))
 
 # 6. Очень длинный текст из нескольких абзацев
 para = " ".join("p%d" % i for i in range(300))
-text6 = para + "\n\n" + para + "\n\n" + para
+# Этап 13: абзацы РАЗНЫЕ — ключ кэша перевода юнитов это текст юнита,
+# поэтому одинаковые абзацы в одном переводе разделяют один inference
+# (поведение с дубликатами юнитов — tests/test_stage13_translation_cache.py).
+para2 = " ".join("q%d" % i for i in range(300))
+para3 = " ".join("r%d" % i for i in range(300))
+text6 = para + "\n\n" + para2 + "\n\n" + para3
 reset()
 r = t.translate(text6, "en-ru")
 assert_full(r, text6, EN)

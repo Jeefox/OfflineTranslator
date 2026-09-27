@@ -21,6 +21,12 @@ split_sentence_to_chunks получает счётчик токенов (count_t
 и config модели; будущий llama.cpp — свой токенизатор и размер контекста).
 Сам алгоритм разбивки (естественные границы → жадная сборка → слова →
 символы) существует в одной копии.
+
+Этап 13: инкрементальный кэш перевода (translation_cache.TranslationCache)
+— in-memory кэш переводов логических юнитов, ключ (идентичность модели,
+направление, точный текст юнита): повторный перевод изменённого текста
+отправляет в backend только изменённые/новые юниты; порядок вывода,
+абзацы и события стрима от кэша не зависят.
 """
 import dataclasses
 import re
@@ -28,6 +34,7 @@ from typing import Callable, Optional
 
 from dictionary_manager import default_dictionary_path, load_snapshot
 from sentence_pipeline import StreamUnit, assemble_output, split_units
+from translation_cache import TranslationCache
 
 
 # ---------------------------------------------------------------------- #
@@ -148,8 +155,27 @@ class TranslationService:
         self.dictionary_path = dictionary_path or default_dictionary_path()
         self._snapshot_loader = snapshot_loader
         self._dict_load_warned = False
+        # Этап 13: инкрементальный кэш перевода (in-memory; ключ —
+        # (идентичность модели, направление, текст юнита)): повторный
+        # перевод изменённого текста не переводит неизменённые юниты.
+        self.translation_cache = TranslationCache()
 
         backend.load()
+
+    # ------------------------------------------------------------------ #
+    #  Этап 13: идентичность модели для ключа кэша                        #
+    # ------------------------------------------------------------------ #
+    @property
+    def model_identity(self):
+        """Идентичность выбранной модели для ключа инкрементального кэша
+        (Этап 13).
+
+        Базовый сервис не знает, какая модель выбрана, — возвращает None.
+        OfflineTranslator сужает её до выбранного model_id (реестр,
+        Этап 9). Ключ (model_id, направление, текст юнита) гарантирует,
+        что результат одной модели/направления не используется для другой.
+        """
+        return None
 
     # ------------------------------------------------------------------ #
     #  Разбиение текста (общее; от движка не зависит)                     #
@@ -178,17 +204,40 @@ class TranslationService:
             paragraphs.append(current)
         return paragraphs
 
+    def _translate_unit(self, sentence: str, direction: str) -> str:
+        """Перевод одного логического юнита (предложения) — единственная
+        точка обращения к бэкенду для translate() и translate_stream()
+        (Этап 13).
+
+        Порядок: in-memory кэш (ключ: идентичность модели, направление,
+        точный текст юнита) → backend по промаху (split_sentence →
+        translate_chunk на каждый чанк), после чего результат
+        сохраняется в кэше. Дубликаты юнитов разделяют одну запись
+        (второе вхождение — даже в том же переводе — уже попадание).
+        Словарь здесь не участвует: точный lookup всего текста
+        выполняется в translate/translate_stream до разбивки на юниты
+        (dictionary.json приоритетнее нейросети).
+        """
+        key = self.translation_cache.make_key(
+            self.model_identity, direction, sentence)
+        cached = self.translation_cache.get(key)
+        if cached is not None:
+            return cached
+        chunks = self.backend.split_sentence(sentence, direction)
+        translation = " ".join(
+            self.backend.translate_chunk(chunk, direction) for chunk in chunks
+        )
+        self.translation_cache.put(key, translation)
+        return translation
+
     def _translate_paragraph(self, sentences: list, direction: str) -> str:
-        """Переводит абзац: каждое предложение разбивается на куски,
-        каждый кусок переводится отдельно, порядок сохраняется.
-        Inference — у бэкенда (split_sentence/translate_chunk)."""
+        """Переводит абзац: каждое предложение переводится через
+        _translate_unit (Этап 13: сначала кэш, по промаху — backend),
+        порядок сохраняется."""
         translated_sentences = []
         for sentence in sentences:
-            chunks = self.backend.split_sentence(sentence, direction)
             translated_sentences.append(
-                " ".join(self.backend.translate_chunk(chunk, direction)
-                         for chunk in chunks)
-            )
+                self._translate_unit(sentence, direction))
         return " ".join(translated_sentences)
 
 
@@ -204,6 +253,11 @@ class TranslationService:
 
         Returns:
             Переведённый текст
+
+        Этап 13: перевод каждого юнита сначала берётся из in-memory
+        кэша (ключ: идентичность модели, направление, текст юнита) —
+        в backend уходят только отсутствующие юниты; склейка абзацев
+        и разделители от кэша не зависят.
         """
         if not text.strip():
             return ""
@@ -264,6 +318,12 @@ class TranslationService:
         Исключение из колбэка прерывает перевод (ранний выход устаревшего
         worker'а).
 
+        Этап 13: перевод юнита сначала берётся из in-memory кэша
+        (ключ: идентичность модели, направление, текст юнита). Попадание
+        — backend не вызывается, юнит выдаётся сразу; промах — обычный
+        путь через backend. Последовательность start/done, порядок юнитов,
+        разделители абзацев и финальный текст от кэша не зависят.
+
         Возвращает полный перевод — тот же текст, что и translate()
         для того же текста (источник истины для финального результата).
         """
@@ -302,13 +362,12 @@ class TranslationService:
                 unit = StreamUnit(src=u.text, src_start=u.start,
                                   src_end=u.end, new_paragraph=u.new_paragraph)
                 on_sentence("start", done, total, unit)
-            # Одно логическое предложение → N технических chunks → один
-            # перевод предложения (порядок chunks сохраняется;
-            # inference — у бэкенда).
-            chunks = self.backend.split_sentence(u.text, direction)
-            translation = " ".join(
-                self.backend.translate_chunk(chunk, direction) for chunk in chunks
-            )
+            # Одно логическое предложение → один перевод предложения
+            # (Этап 13): сначала in-memory кэш — при попадании backend
+            # НЕ вызывается и юнит выдаётся сразу; по промаху — обычный
+            # путь через backend (N технических chunks → склейка),
+            # результат сохраняется в кэше.
+            translation = self._translate_unit(u.text, direction)
             done += 1
             if on_sentence is not None:
                 on_sentence("done", done, total,

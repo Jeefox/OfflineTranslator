@@ -408,7 +408,12 @@ def run_backend(backend_name, examples=None):
     if examples is None:
         examples = bdataset.load_dataset()
     samples = run_main_pass(translator, backend_name, examples)
+    # Этап 13: в сервисе появился in-memory кэш переводов юнитов —
+    # повторные прогоны тех же примеров (determinism, streaming) должны
+    # измерять настоящий inference, а не попадания в кэш.
+    translator.translation_cache.clear()
     determinism = run_determinism(translator, examples, samples)
+    translator.translation_cache.clear()
     streaming = run_streaming(translator, examples)
     rss_peak = peak_rss_kb()
     return {
