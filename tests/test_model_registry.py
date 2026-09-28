@@ -583,20 +583,23 @@ if translator is not None:
               fin == "⟪Alpha one.⟫ ⟪Beta two.⟫"
               and ev == ["start", "done", "start", "done"], (fin, str(ev)))
         # Direction mismatch: translate() — «Ошибка перевода: ...»
-        # (тот же формат, что и для ошибок бэкенда)
+        # (Этап 14: пользовательский текст БЕЗ внутренних идентификаторов —
+        # model_id/направление уходят в лог, а не в статус GUI)
         r = t9.translate("Привет, мир.", "ru-en")
         check("facade9_marian_dir_mismatch_translate",
               r.startswith("Ошибка перевода:")
-              and "marian-en-ru" in r
-              and "ru-en" in r
-              and "en-ru" in r, r)
-        # translate_stream() — исключение (контракт: stream не глотает)
+              and "не поддерживает выбранное направление" in r
+              and "marian-en-ru" not in r
+              and "ru-en" not in r, r)
+        # translate_stream() — исключение (контракт: stream не глотает);
+        # Этап 14: текст исключения так же санитизирован
         try:
             t9.translate_stream("Привет, мир.", "ru-en")
             check("facade9_marian_dir_mismatch_stream", False)
         except ValueError as e:
             check("facade9_marian_dir_mismatch_stream",
-                  "marian-en-ru" in str(e) and "ru-en" in str(e), str(e))
+                  "не поддерживает выбранное направление" in str(e)
+                  and "marian-en-ru" not in str(e), str(e))
     finally:
         translator.MarianBackend = _orig_marian9
 
@@ -613,7 +616,9 @@ if translator is not None:
         r = t9b.translate("Hello world.", "en-ru")
         check("facade9_marian_ru_dir_mismatch",
               r.startswith("Ошибка перевода:")
-              and "marian-ru-en" in r and "en-ru" in r, r)
+              and "не поддерживает выбранное направление" in r
+              and "marian-ru-en" not in r
+              and "en-ru" not in r, r)
     finally:
         translator.MarianBackend = _orig_marian9
 

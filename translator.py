@@ -32,8 +32,13 @@
 main.py создаёт OfflineTranslator() без параметров и не знает, какой
 движок выполняется.
 """
+import logging
 import os
 from typing import Optional
+
+# Логи: технические детали (model_id, направление) — сюда, а не в текст
+# исключения: пользователь видит только понятное сообщение (Этап 14).
+logger = logging.getLogger("offline_translate.translator")
 
 # load_snapshot намеренно — модульное имя этого модуля:
 # регрессионный контракт (tests/test_dictionary.py) monkeypatch'ит
@@ -249,14 +254,21 @@ class OfflineTranslator(TranslationService):
         направления (descriptor.directions): неподдерживаемое направление —
         явная ValueError (молчаливого перевода не в том направлении нет).
         Legacy-выбор (_model_directions is None) — без ограничений:
-        направление валидирует сам бэкенд, как раньше."""
+        направление валидирует сам бэкенд, как раньше.
+
+        Текст исключения — понятный пользователю (попадает в статус GUI,
+        Этап 14): без внутренних идентификаторов. Технические детали
+        (model_id, направление) — в лог.
+        """
         allowed = self._model_directions
         if allowed is not None and direction not in allowed:
-            raise ValueError(
+            logger.warning(
                 "Модель %r не поддерживает направление %r "
-                "(модель поддерживает: %s). Выберите модель для нужного "
-                "направления — реестр моделей (model_registry)."
-                % (self.model_id, direction, ", ".join(allowed)))
+                "(модель поддерживает: %s)",
+                self.model_id, direction, ", ".join(allowed))
+            raise ValueError(
+                "Модель не поддерживает выбранное направление. "
+                "Выберите подходящую модель в «Настройках».")
 
     def translate(self, text: str, direction: str = "en-ru") -> str:
         """Перевод (контракт TranslationService.translate сохранён:

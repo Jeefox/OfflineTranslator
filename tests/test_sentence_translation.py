@@ -339,6 +339,15 @@ check("приложение запущено, переводчик загруж�
       wait_for(app, lambda: app.translator is not None, 10.0))
 ft = app.translator
 
+
+def fresh_ft(timeout=10.0):
+    """Этап 10/14: смена направления может (пере)загрузить переводчик
+    (direction-specific модель) — ждём завершения загрузки и возвращаем
+    ТЕКУЩИЙ экземпляр (предыдущий становится «старым» и больше не
+    принимает переводы)."""
+    wait_for(app, lambda: app.translator is not None, timeout)
+    return app.translator
+
 S3 = "First sentence. Second sentence. Third sentence."
 U3 = split_units(S3)
 # Ожидаемые переводы фейка (каждое предложение S3 = 2 слова = 1 чанк).
@@ -458,8 +467,9 @@ check("подсветка: после done(2) пара (2-е, 2-й перево�
       wait_for(app, _state_after2, 6.0),
       (out_text(app), hl_ranges(app, "input_text", app._hl_src_tag),
        hl_ranges(app, "output_text", app._hl_dst_tag)))
-check("статус: идёт перевод (2 из 3 завершено)",
-      "2/3" in app.status_label.cget("text"),
+check("статус: идёт перевод (обрабатывается юнит 3 из 3; Этап 14: "
+      "текущий юнит, не число завершённых)",
+      "3/3" in app.status_label.cget("text"),
       app.status_label.cget("text"))
 check("подсветка: финал", wait_for(app, lambda: out_text(app) == FULL3, 6.0))
 check("подсветка: в финальном состоянии пара (3-е, 3-й перевод) видна",
@@ -601,9 +611,13 @@ _reset_fields("Swap source one. Two.")
 app.start_translation()
 check("swap: исходный перевод готов",
       wait_for(app, lambda: out_text(app) == SWAP_OUT), out_text(app))
-n0_calls = len(ft.chunk_calls)
 app.swap_fields()
+# Этап 14: swap идёт через _set_direction — под новое направление
+# (пере)загружается модель, вызовы автоперевода фиксирует НОВЫЙ
+# экземпляр переводчика (fresh_ft).
+ft = fresh_ft()
 # Новый ввод = SWAP_OUT (4 слова) -> 2 чанка -> ровно 2 новых вызова.
+n0_calls = len(ft.chunk_calls)
 check("swap: ровно один новый translation cycle",
       wait_for(app, lambda: len(ft.chunk_calls) >= n0_calls + 2, 6.0)
       and len(ft.chunk_calls) == n0_calls + 2, ft.chunk_calls[n0_calls:])
@@ -618,6 +632,7 @@ check("swap: старые tags/highlights удалены",
       and hl_ranges(app, "output_text", app._hl_dst_tag) == [])
 app.change_direction("EN → RU")
 pump(0.1, app)
+ft = fresh_ft()  # смена направления: модель (пере)загружена
 
 # --- 10) swap ВО ВРЕМЯ перевода: старый стрим не применяется ---------------
 ft.chunk_delay = 0.25
@@ -625,13 +640,18 @@ _reset_fields(S3)
 app.start_translation()
 check("swap в полёте: первое предложение появилось",
       wait_for(app, lambda: T1 in out_text(app), 6.0))
-n0_calls = len(ft.chunk_calls)
+ft_before = ft
+n0_calls = len(ft_before.chunk_calls)
 app.swap_fields()
+# Этап 14: swap (пере)загружает модель под новое направление —
+# автоперевод идёт на новом экземпляре, а полётные en-ru чанки старого
+# стрима остались на предыдущем (ft_before).
+ft = fresh_ft()
 # Поле ввода после swap = частичный перевод (T1) -> один автоперевод (ru-en).
 check("swap в полёте: новый цикл по новому направлению запущен",
       wait_for(app, lambda: out_text(app) == "««First sentence.»»", 8.0),
       out_text(app))
-after = [c for c in ft.chunk_calls[n0_calls:]]
+after = ft_before.chunk_calls[n0_calls:] + ft.chunk_calls
 check("swap в полёте: старый стрим остановлен (en-ru чанков <= 1 в полёте)",
       sum(1 for c in after if c[0] == "en-ru") <= 1, after)
 check("swap в полёте: старый полный результат не появился",
@@ -641,6 +661,7 @@ check("swap в полёте: подсветка снята",
       hl_ranges(app, "input_text", app._hl_src_tag) == [])
 app.change_direction("EN → RU")
 pump(0.1, app)
+ft = fresh_ft()  # смена направления: модель (пере)загружена
 
 # --- 11) ручной и автоматический перевод — ОДИН pipeline -------------------
 ft.chunk_delay = 0.05

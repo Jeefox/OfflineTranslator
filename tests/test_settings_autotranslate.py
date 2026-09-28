@@ -417,8 +417,12 @@ app.input_text.delete("1.0", "end")
 app.input_text.insert("1.0", "swap src")
 app.start_translation()
 wait_for(app, lambda: "[en-ru] swap src" in app.output_text.get("1.0", "end-1c"))
-n0 = len(ft.calls)
 app.swap_fields()
+# Этап 14: swap идёт через _set_direction — под новое направление
+# (пере)загружается совместимая модель, автоперевод срабатывает после
+# загрузки; вызов фиксирует НОВЫЙ экземпляр (fresh_ft).
+ft = fresh_ft()
+n0 = len(ft.calls)
 pump(0.05, app)
 check("swap: ровно один автоперевод",
       wait_for(app, lambda: len(ft.calls) > n0) and len(ft.calls) == n0 + 1)

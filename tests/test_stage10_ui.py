@@ -313,6 +313,15 @@ check("dlg: список моделей — из реестра (без бэке
       sorted(mid for _l, mid in labels)
       == sorted(d.id for d in app.model_manager.list_models()), labels)
 for label, mid in labels:
+    desc = app.model_manager.get_model(mid)
+    if not desc.supports_direction(dlg._model_direction()):
+        # Этап 14: несовместимая модель — однозначный маркер «не подходит
+        # для ...» (противоречивого «доступна (направление не
+        # поддерживается)» больше нет).
+        check("dlg: label %s — однозначный «не подходит»" % mid,
+              "не подходит для" in label and "доступна" not in label,
+              label)
+        continue
     avail = app.model_manager.is_model_available(mid)
     mark = "доступна" if avail else "недоступна локально"
     check("dlg: label %s показывает доступность" % mid, mark in label,
@@ -338,8 +347,9 @@ check("dlg: выбор переключился на дефолт нового �
       dlg.model_var.get())
 marked = [l for l, mid in dlg._model_labels("ru-en")
           if not app.model_manager.get_model(mid).supports_direction("ru-en")]
-check("dlg: несовместимые с направлением модели помечены",
-      len(marked) >= 1 and all("не поддерживается" in l for l in marked),
+check("dlg: несовместимые с направлением модели помечены однозначно",
+      len(marked) >= 1
+      and all("не подходит для RU → EN" in l for l in marked),
       marked)
 
 # Выбор модели + сохранение — через app._set_model.

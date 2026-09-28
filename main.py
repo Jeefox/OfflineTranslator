@@ -2,6 +2,7 @@
 
 import bisect
 import customtkinter as ctk
+import logging
 import re
 import tkinter as tk
 from tkinter import messagebox
@@ -16,6 +17,10 @@ from model_registry import (
 )
 import queue
 import threading
+
+# Логи: технические детали (причины ошибок, сырые исключения) пишутся
+# сюда, а НЕ в пользовательский статус (Этап 14).
+logger = logging.getLogger("offline_translate.gui")
 
 # Настройка внешнего вида
 ctk.set_appearance_mode("Dark")  # Темная тема (или "Light", "System")
@@ -124,6 +129,11 @@ class TranslatorApp(ctk.CTk):
         # (None — ещё не загружен; может отличаться от self.model_id
         # при runtime-фолбэке на доступный дефолт, Этап 10).
         self._translator_model_id = None
+        # Идёт (пере)загрузка модели: True в _start_model_load,
+        # False в init_done/init_error (Этап 14) — надёжное состояние
+        # «идёт загрузка» (в отличие от мимолётного translator = None,
+        # который фоновый поток может уже успеть заменить).
+        self._model_loading = False
 
         # Состояние автоперевода / single-flight:
         # _translation_busy — сейчас идёт перевод;
@@ -209,8 +219,9 @@ class TranslatorApp(ctk.CTk):
         """(Пере)загружает переводчик в фоновом потоке (Этап 10).
 
         Пока идёт загрузка self.translator = None — это же поведение, что
-        при старте: кнопка «Перевести» отключена, _start_translation_internal
-        ждёт («Ожидание загрузки моделей...»), автоперевод после init_done
+        при старте: кнопка «Перевести» отключена (в т.ч. при (пере)загрузке
+        в середине сессии — Этап 14), _start_translation_internal ждёт
+        («Ожидание загрузки моделей...»), автоперевод после init_done
         отработает отложенно. Поток не обращается к виджетам (только к
         self.translator и очереди) — threading-модель старта сохранена.
         """
@@ -218,6 +229,12 @@ class TranslatorApp(ctk.CTk):
         # направления/модели) не должен переопределять свежий результат.
         self._load_seq = getattr(self, "_load_seq", 0) + 1
         self.translator = None
+        self._model_loading = True
+        # Пока модель не загружена, ручной перевод невозможен — кнопка
+        # отключена до init_done (включается в init_done; при init_error
+        # остаётся отключённой). Без этого клик во время загрузки давал
+        # ложное «Ожидание загрузки моделей...» (Этап 14).
+        self.translate_btn.configure(state="disabled")
         self._set_status("busy", "Инициализация модели...")
         threading.Thread(target=self._init_translator_worker,
                          args=(self._load_seq,), daemon=True).start()
@@ -477,19 +494,39 @@ class TranslatorApp(ctk.CTk):
 
         if kind == "init_done":
             # Модели загружены: перевод доступен.
+            self._model_loading = False
             self.translate_btn.configure(state="normal")
             # Если во время загрузки текста уже ввели — запланируем автоперевод.
             if self.settings.get("autotranslate"):
                 self._schedule_autotranslate()
+            # Пользователь всегда видит, какой моделью РЕАЛЬНО работает
+            # приложение — при любом пути сюда: старт, смена модели,
+            # фолбэк, смена направления (Этап 14).
+            self._update_model_display()
+            # Ready-статус: готовность + фактическая модель + заметка о
+            # фолбэке, если была (_model_note потребляется
+            # _ready_status_text). Недоступный глобальный хоткей —
+            # предупреждение в том же статусе: сырая причина (traceback
+            # импорта) не попадает в пользовательский статус — только в
+            # лог и в окно «Настройки» (Этап 14).
             if self._agent_error:
-                # Глобальный хоткей недоступен — предупреждаем (повторно видно
-                # и в окне «Настройки»).
-                self._set_status("busy", f"Готово. Глобальный хоткей недоступен: {self._agent_error}")
+                logger.warning("Глобальный хоткей недоступен: %s",
+                               self._agent_error)
+                status = ("%s Глобальный хоткей недоступен."
+                          % self._ready_status_text())
             else:
-                self._set_status("ready", self._ready_status_text())
+                status = self._ready_status_text()
+            self._set_status("ready", status)
         elif kind == "init_error":
-            # Загрузка не удалась: показать ошибку, кнопка остаётся отключённой.
-            self._set_status("error", f"Ошибка загрузки: {message[1]}")
+            # Загрузка не удалась: понятная пользователю ошибка (сырое
+            # исключение — в лог, в статус не попадает), кнопка остаётся
+            # отключённой — включается только в init_done (Этап 14).
+            self._model_loading = False
+            logger.error("Ошибка загрузки модели: %s", message[1])
+            self._set_status(
+                "error",
+                "Не удалось загрузить модель. Проверьте настройки модели "
+                "и доступность необходимых файлов.")
         elif kind == "translation_done":
             generation, result = message[1], message[2]
             # Результат применяем только если операция ещё актуальна;
@@ -634,8 +671,13 @@ class TranslatorApp(ctk.CTk):
         # Содержимое полей изменилось — запущенный перевод (если есть) устарел.
         self._translation_generation += 1
 
-        self.direction_var.set("RU → EN" if self.direction == "en-ru" else "EN → RU")
-        self._apply_direction("ru-en" if self.direction == "en-ru" else "en-ru")
+        # Смена направления — через model-aware путь (Этап 14): если текущая
+        # модель не поддерживает новое направление, автоматически выбирается
+        # совместимая (то же поведение, что у меню направления, _set_direction).
+        # _apply_direction() один лишь меняет подписи — directional-модель
+        # оставалась несовместимой с новым направлением, и перевод выдавал
+        # ошибку.
+        self._set_direction("ru-en" if self.direction == "en-ru" else "en-ru")
 
         # Прежний перевод оказался в исходном поле — один debounce-
         # автоперевод по новому направлению (если автоперевод включён).
@@ -1079,7 +1121,10 @@ class TranslatorApp(ctk.CTk):
             # Обработка следующего юнита началась: предыдущая завершённая
             # пара остаётся текущей (согласованная единица (k, k)).
             if total > 1:
-                self._set_status("busy", f"Перевод… ({done}/{total})")
+                # Показываем номер ТЕКУЩЕГО юнита (done+1), а не количество
+                # уже завершённых: иначе первый юнит отображал бы «0/N»
+                # (Этап 14).
+                self._set_status("busy", f"Перевод… ({done + 1}/{total})")
             return
 
         # phase == "done": дописываем перевод юнита в поле вывода.
@@ -1838,17 +1883,21 @@ class SettingsDialog(ctk.CTkToplevel):
         Label показывает отображаемое имя и ЛЁГКУЮ проверку доступности
         (ModelManager.is_model_available — filesystem, без загрузки
         моделей и без сети). Модель, не поддерживающая текущее
-        направление, остаётся в списке с явным маркером: пользователь
-        видит, что именно будет заменено дефолтом при сохранении.
+        направление, получает однозначный маркер «не подходит для ...»
+        (Этап 14: вместо противоречивого «доступна (направление не
+        поддерживается)») — пользователь видит, что именно будет
+        заменено дефолтом при сохранении.
         """
         manager = self.app.model_manager
+        dir_label = "RU → EN" if direction == "ru-en" else "EN → RU"
         labels = []
         for desc in manager.list_models():
-            status = ("доступна" if manager.is_model_available(desc.id)
-                      else "недоступна локально")
-            label = f"{desc.name} — {status}"
             if not desc.supports_direction(direction):
-                label += " (направление не поддерживается)"
+                label = f"{desc.name} — не подходит для {dir_label}"
+            else:
+                status = ("доступна" if manager.is_model_available(desc.id)
+                          else "недоступна локально")
+                label = f"{desc.name} — {status}"
             labels.append((label, desc.id))
         return labels
 
@@ -2044,7 +2093,22 @@ class SettingsDialog(ctk.CTkToplevel):
         if model_id != self.app.settings.get("model_id"):
             self.app._set_model(model_id)
         self.app._start_hotkey_agent()
-        self.app._set_status("ready", "Настройки сохранены")
+        # Честный финальный статус (Этап 14): если сохранение запустило
+        # (пере)загрузку модели, «Настройки сохранены» без указания этого
+        # вела к ложному впечатлению готовности. Заметка о фолбэке, если
+        # появилась, — тоже в статусе, а не только на момент сохранения.
+        # _model_loading — синхронный флаг (_start_model_load), а не
+        # «translator is None»: быстрый worker мог уже подставить
+        # переводчик. После init_done статус станет обычным ready с
+        # названием модели.
+        if self.app._model_loading:
+            self.app._set_status("busy",
+                                 "Настройки сохранены. Загрузка модели...")
+        elif self.app._model_note:
+            note, self.app._model_note = self.app._model_note, None
+            self.app._set_status("ready", "Настройки сохранены. %s" % note)
+        else:
+            self.app._set_status("ready", "Настройки сохранены")
         self._on_close()
 
 

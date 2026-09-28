@@ -128,8 +128,12 @@ class HotkeyAgent:
         """Запускает слушатель хоткея. False — не запущен (причина в self.error)."""
         self.stop()
         if not PYNPUT_AVAILABLE:
-            self.error = f"pynput недоступен ({PYNPUT_IMPORT_ERROR or 'не установлен'})"
-            logger.warning("Агент хоткея не запущен: %s", self.error)
+            # Понятное пользователю сообщение (попадает в статус GUI);
+            # сырая причина импорта (ModuleNotFoundError: No module named
+            # 'pynput') — только в лог (Этап 14).
+            self.error = "pynput не установлен"
+            logger.warning("Агент хоткея не запущен: pynput недоступен (%s)",
+                           PYNPUT_IMPORT_ERROR or "не установлен")
             return False
         from settings import normalize_hotkey
         normalized = normalize_hotkey(hotkey)
@@ -143,7 +147,9 @@ class HotkeyAgent:
             self._listener.start()  # внутри поднимает свой поток
         except Exception as exc:  # noqa: BLE001 (нет X/прав, двойной запуск и т.п.)
             self._listener = None
-            self.error = str(exc)
+            # Сырое исключение — в лог; пользователю — чистое сообщение
+            # (Этап 14).
+            self.error = "не удалось запустить слушатель хоткеев"
             logger.warning("Не удалось запустить слушатель хоткеев: %s", exc)
             return False
         self.active = True
