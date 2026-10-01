@@ -65,7 +65,7 @@ OPTIONAL_DEPS = (
 
 
 def fail(message: str) -> "None":
-    print(f"✗ ОШИБКА СБОРКИ: {message}", file=sys.stderr)
+    print(f"BUILD FAILED: {message}", file=sys.stderr)
     sys.exit(1)
 
 
@@ -76,8 +76,8 @@ def check_dependencies() -> list[str]:
     ]
     if missing:
         fail(
-            "не установлены обязательные зависимости: " + ", ".join(missing)
-            + "\n  Выполните: pip install -r requirements.txt pyinstaller"
+            "missing required dependencies: " + ", ".join(missing)
+            + "\n  Run: pip install -r requirements.txt pyinstaller"
         )
     present_optional = [
         name for name in OPTIONAL_DEPS if importlib.util.find_spec(name) is not None
@@ -87,7 +87,7 @@ def check_dependencies() -> list[str]:
     ]
     if skipped_optional:
         print(
-            "ℹ Опциональные зависимости не установлены и не встраиваются: "
+            "NOTE: optional dependencies not installed, not bundled: "
             + ", ".join(skipped_optional)
         )
     return present_optional
@@ -97,10 +97,10 @@ def clean() -> None:
     """Удаляет артефакты предыдущих сборок."""
     for path in (BUILD_DIR, DIST_DIR):
         if path.exists():
-            print(f"Удаляю {path.name}/ ...")
+            print(f"Removing {path.name}/ ...")
             shutil.rmtree(path, ignore_errors=True)
     for spec in ROOT.glob("*.spec"):
-        print(f"Удаляю {spec.name} ...")
+        print(f"Removing {spec.name} ...")
         spec.unlink()
 
 
@@ -140,7 +140,7 @@ def build(optional_deps: list[str]) -> None:
         args += ["--collect-all", dep]
     args.append(ENTRY)
 
-    print("Запускаю PyInstaller ...")
+    print("Running PyInstaller ...")
     print("  " + " ".join(args))
     subprocess.run(args, cwd=ROOT, check=True)
 
@@ -148,7 +148,7 @@ def build(optional_deps: list[str]) -> None:
     binary_name = f"{APP_NAME}.exe" if is_windows else APP_NAME
     exe = DIST_DIR / APP_NAME / binary_name
     if not exe.exists():
-        fail(f"ожидаемый исполняемый файл не найден: {exe}")
+        fail(f"expected executable not found: {exe}")
 
     total = 0
     for root, _dirs, files in os.walk(DIST_DIR / APP_NAME):
@@ -159,11 +159,11 @@ def build(optional_deps: list[str]) -> None:
     size_mb = total / (1024 * 1024)
 
     print()
-    print("✓ СБОРКА УСПЕШНА!")
-    print(f"  Бандль:      {DIST_DIR / APP_NAME}")
-    print(f"  Исполняемый: {exe}")
-    print(f"  Размер:      {size_mb:.0f} МБ")
-    print("  Архивирование (см. .github/workflows/build.yml):")
+    print("BUILD OK!")
+    print(f"  Bundle:      {DIST_DIR / APP_NAME}")
+    print(f"  Executable:  {exe}")
+    print(f"  Size:        {size_mb:.0f} MB")
+    print("  Archiving (see .github/workflows/build.yml):")
     if is_windows:
         print(f"    Compress-Archive -Path {DIST_DIR / APP_NAME} "
               "-DestinationPath OfflineTranslator-Windows.zip")
@@ -173,9 +173,9 @@ def build(optional_deps: list[str]) -> None:
 
 def main() -> None:
     if not (ROOT / ENTRY).exists():
-        fail(f"файл входа {ENTRY} не найден в корне проекта: {ROOT}")
+        fail(f"entry point {ENTRY} not found in project root: {ROOT}")
     print("========================================")
-    print("Сборка OfflineTranslator (PyInstaller onedir)")
+    print("Build OfflineTranslator (PyInstaller onedir)")
     print("========================================")
     clean()
     optional = check_dependencies()
