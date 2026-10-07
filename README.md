@@ -241,11 +241,15 @@ git tag v1.0.0
 git push origin v1.0.0
 ```
 
-В релизе появятся:
+В релизе появятся части архивов:
 
-- `OfflineTranslator-Linux.tar.gz` — Linux x86_64;
-- `OfflineTranslator-macOS.tar.gz` — macOS arm64;
-- `OfflineTranslator-Windows.zip` — Windows x86_64.
+- `OfflineTranslator-Linux.tar.gz.001`, `.002`, … — Linux x86_64;
+- `OfflineTranslator-macOS.tar.gz.001`, `.002`, … — macOS arm64;
+- `OfflineTranslator-Windows.zip.001`, `.002`, … — Windows x86_64.
+
+GitHub ограничивает размер одного файла релиза 2 GiB, поэтому части нужно
+сначала объединить. На Linux/macOS используйте `cat` по частям, на Windows —
+`copy /b` или PowerShell, затем распакуйте получившийся архив.
 
 ## Ограничения текущей версии
 

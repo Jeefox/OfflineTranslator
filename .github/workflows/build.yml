@@ -44,11 +44,14 @@ jobs:
       - name: Archive
         run: tar -czf OfflineTranslator-Linux.tar.gz -C dist OfflineTranslator
 
+      - name: Split archive below GitHub asset limit
+        run: python -m scripts.split_release_archive OfflineTranslator-Linux.tar.gz
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: OfflineTranslator-Linux
-          path: OfflineTranslator-Linux.tar.gz
+          path: OfflineTranslator-Linux.tar.gz.*
           retention-days: 30
 
   build-windows:
@@ -83,11 +86,14 @@ jobs:
       - name: Archive
         run: Compress-Archive -Path dist/OfflineTranslator -DestinationPath OfflineTranslator-Windows.zip
 
+      - name: Split archive below GitHub asset limit
+        run: python -m scripts.split_release_archive OfflineTranslator-Windows.zip
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: OfflineTranslator-Windows
-          path: OfflineTranslator-Windows.zip
+          path: OfflineTranslator-Windows.zip.*
           retention-days: 30
 
   build-macos:
@@ -121,11 +127,14 @@ jobs:
       - name: Archive
         run: tar -czf OfflineTranslator-macOS.tar.gz -C dist OfflineTranslator
 
+      - name: Split archive below GitHub asset limit
+        run: python -m scripts.split_release_archive OfflineTranslator-macOS.tar.gz
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: OfflineTranslator-macOS
-          path: OfflineTranslator-macOS.tar.gz
+          path: OfflineTranslator-macOS.tar.gz.*
           retention-days: 30
 
   release:
@@ -147,6 +156,14 @@ jobs:
           tag_name: ${{ github.ref_name }}
           generate_release_notes: true
           files: |
-            release-assets/OfflineTranslator-Linux/OfflineTranslator-Linux.tar.gz
-            release-assets/OfflineTranslator-Windows/OfflineTranslator-Windows.zip
-            release-assets/OfflineTranslator-macOS/OfflineTranslator-macOS.tar.gz
+            release-assets/OfflineTranslator-Linux/OfflineTranslator-Linux.tar.gz.*
+            release-assets/OfflineTranslator-Windows/OfflineTranslator-Windows.zip.*
+            release-assets/OfflineTranslator-macOS/OfflineTranslator-macOS.tar.gz.*
+          body: |
+            Архивы разделены на части из-за ограничения GitHub в 2 GiB на один файл.
+
+            Linux/macOS: скачайте все части одной платформы и выполните:
+            `cat OfflineTranslator-Linux.tar.gz.* > OfflineTranslator-Linux.tar.gz`
+
+            Windows: скачайте все части и выполните в cmd:
+            `copy /b OfflineTranslator-Windows.zip.001+OfflineTranslator-Windows.zip.002 OfflineTranslator-Windows.zip`
