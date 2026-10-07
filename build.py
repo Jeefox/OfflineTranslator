@@ -104,8 +104,55 @@ def clean() -> None:
             print(f"Removing {path.name}/ ...")
             shutil.rmtree(path, ignore_errors=True)
     for spec in ROOT.glob("*.spec"):
-        print(f"Removing {spec.name} ...")
-        spec.unlink()
+            print(f"Removing {spec.name} ...")
+            spec.unlink()
+
+
+def prepare_bundle_cache(cache_dir: Path) -> Path:
+    """Собирает минимальный HF-кэш для встраивания в PyInstaller.
+
+    Полный кэш Hugging Face содержит общие ``blobs``, несколько старых
+    snapshot-ов и служебные lock-файлы. При копировании в PyInstaller это
+    раздувает архив и на Windows может превысить лимит GitHub Release.
+    Для запуска Marian достаточно одного snapshot каждой модели в формате
+    ``models--.../snapshots/<revision>`` и ``refs/main``. Файлы snapshot-а
+    копируются по содержимому, поэтому симлинки HF не требуют отдельного
+    каталога blobs.
+    """
+    bundle_dir = BUILD_DIR / "bundle_cache"
+    if bundle_dir.exists():
+        shutil.rmtree(bundle_dir, ignore_errors=True)
+    bundle_dir.mkdir(parents=True, exist_ok=True)
+
+    required_models = (
+        "Helsinki-NLP/opus-mt-en-ru",
+        "Helsinki-NLP/opus-mt-ru-en",
+    )
+    for repo_id in required_models:
+        repo_name = "models--" + repo_id.replace("/", "--")
+        source_repo = cache_dir / repo_name
+        refs_main = source_repo / "refs" / "main"
+        revision = refs_main.read_text(encoding="utf-8").strip() \
+            if refs_main.is_file() else ""
+        source_snapshot = source_repo / "snapshots" / revision
+        if not revision or not source_snapshot.is_dir():
+            snapshots = sorted(
+                p for p in (source_repo / "snapshots").iterdir()
+                if p.is_dir()) if (source_repo / "snapshots").is_dir() else []
+            if not snapshots:
+                fail(f"no snapshot found for release model: {repo_id}")
+            source_snapshot = snapshots[-1]
+            revision = source_snapshot.name
+
+        target_repo = bundle_dir / repo_name
+        target_snapshot = target_repo / "snapshots" / revision
+        shutil.copytree(source_snapshot, target_snapshot,
+                        symlinks=False, dirs_exist_ok=True)
+        (target_repo / "refs").mkdir(parents=True, exist_ok=True)
+        (target_repo / "refs" / "main").write_text(
+            revision + "\n", encoding="utf-8")
+
+    return bundle_dir
 
 
 def build(optional_deps: list[str]) -> None:
@@ -128,6 +175,7 @@ def build(optional_deps: list[str]) -> None:
             + ", ".join(missing_models)
             + "\n  Start the app once with internet access, then build again."
         )
+    bundle_cache_dir = prepare_bundle_cache(cache_dir)
     args = [
         sys.executable,
         "-m",
@@ -141,7 +189,7 @@ def build(optional_deps: list[str]) -> None:
         f"dictionary.json{sep}.",
         # Базовые Marian-модели обязательны для офлайн-первого запуска.
         "--add-data",
-        f"{cache_dir}{sep}cache",
+        f"{bundle_cache_dir}{sep}cache",
         # Данные/бинарники/сабмодули библиотек (нативные расширения, темы, .so).
         "--collect-all",
         "customtkinter",
