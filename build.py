@@ -155,6 +155,27 @@ def prepare_bundle_cache(cache_dir: Path) -> Path:
     return bundle_dir
 
 
+def prune_runtime_bundle(bundle_dir: Path) -> None:
+    """Удаляет из onedir-бандля инструменты PyTorch, не нужные приложению.
+
+    ``--collect-all torch`` необходим для надёжного обнаружения runtime
+    библиотек, но также забирает тесты, заголовки и инструменты разработки.
+    Они не участвуют в инференсе Marian и только раздувают release-архив.
+    """
+    internal = bundle_dir / "_internal"
+    torch_dir = internal / "torch"
+    if not torch_dir.is_dir():
+        return
+    removable = (
+        "include", "test", "testing", "bin", "distributed", "_inductor",
+        "_dynamo", "torchgen",
+    )
+    for name in removable:
+        path = torch_dir / name
+        if path.is_dir():
+            shutil.rmtree(path, ignore_errors=True)
+
+
 def build(optional_deps: list[str]) -> None:
     """Запускает PyInstaller (onedir, GUI) и проверяет результат."""
     is_windows = os.name == "nt"
@@ -221,6 +242,7 @@ def build(optional_deps: list[str]) -> None:
     exe = DIST_DIR / APP_NAME / binary_name
     if not exe.exists():
         fail(f"expected executable not found: {exe}")
+    prune_runtime_bundle(DIST_DIR / APP_NAME)
 
     total = 0
     for root, _dirs, files in os.walk(DIST_DIR / APP_NAME):
