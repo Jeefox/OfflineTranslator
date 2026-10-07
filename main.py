@@ -360,6 +360,7 @@ class TranslatorApp(ctk.CTk):
         # поэтому смещения _unit_map и hover не зависят от размера окна.
         self.input_text = ctk.CTkTextbox(main_frame, font=("Arial", 14),
                                          wrap="word",
+                                         undo=True,
                                          fg_color=self._pal["field"], text_color=self._pal["text"],
                                          corner_radius=10,
                                          scrollbar_button_color=self._pal["scrollbar"],
@@ -380,6 +381,7 @@ class TranslatorApp(ctk.CTk):
         # визуальный, текст и смещения не меняются.
         self.output_text = ctk.CTkTextbox(main_frame, font=("Arial", 14),
                                           wrap="word",
+                                          undo=True,
                                           fg_color=self._pal["field"], text_color=self._pal["text"],
                                           corner_radius=10,
                                           scrollbar_button_color=self._pal["scrollbar"],
@@ -1311,6 +1313,8 @@ class TranslatorApp(ctk.CTk):
             return self._paste_physical(widget)
         if key == "x":
             return self._cut_physical(widget)
+        if key == "z":
+            return self._undo_physical(widget)
         return None
 
     @staticmethod
@@ -1378,6 +1382,17 @@ class TranslatorApp(ctk.CTk):
                 widget.delete("sel.first", "sel.last")
             except tk.TclError:
                 pass
+        return "break"
+
+    def _undo_physical(self, widget):
+        """Отменяет последнее изменение в активном текстовом поле."""
+        if not self._text_widget(widget):
+            return None
+        try:
+            widget.edit_undo()
+        except tk.TclError:
+            # Пустая история отмены — обычная ситуация, не ошибка для UI.
+            pass
         return "break"
 
     def _on_hotkey_translate(self, _event):

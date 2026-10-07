@@ -142,8 +142,12 @@ class HotkeyAgent:
             logger.warning("Агент хоткея не запущен: %s", self.error)
             return False
         try:
-            key = _pynput_keyboard.HotKey.parse(normalized)
-            self._listener = _pynput_keyboard.GlobalHotKeys({key: self._trigger})
+            # GlobalHotKeys принимает строковые комбинации вида
+            # ``<ctrl>+<alt>+t``. HotKey.parse() возвращает список
+            # KeyCode/Key-объектов, который нельзя использовать ключом dict
+            # (unhashable type: 'list').
+            self._listener = _pynput_keyboard.GlobalHotKeys(
+                {normalized: self._trigger})
             self._listener.start()  # внутри поднимает свой поток
         except Exception as exc:  # noqa: BLE001 (нет X/прав, двойной запуск и т.п.)
             self._listener = None

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import threading
 
 logger = logging.getLogger("offline_translate.tray")
 
@@ -51,10 +50,13 @@ class SystemTray:
             )
             self.icon = pystray.Icon(
                 "OfflineTranslator", image, "Офлайн Переводчик", menu)
-            self.thread = threading.Thread(target=self._run,
-                                            name="offline-translator-tray",
-                                            daemon=True)
-            self.thread.start()
+            # pystray.run() должен вызываться из главного потока. Вызов
+            # run() вручную из нашего daemon-потока иногда работает на Xorg,
+            # но ломается на GTK/AppIndicator, из-за чего active сбрасывался
+            # и крестик закрывал приложение вместо сворачивания.
+            # run_detached() сам выбирает корректный способ интеграции с
+            # текущим оконным циклом.
+            self.icon.run_detached()
             self.active = True
             return True
         except Exception as exc:  # noqa: BLE001
@@ -62,13 +64,6 @@ class SystemTray:
             self.icon = None
             self.active = False
             return False
-
-    def _run(self):
-        try:
-            self.icon.run()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Трей завершился недоступностью платформы: %s", exc)
-            self.active = False
 
     def _show(self, _icon=None, _item=None):
         self.root.after(0, self.on_show)
