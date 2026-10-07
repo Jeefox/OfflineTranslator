@@ -3,12 +3,15 @@
 import bisect
 import customtkinter as ctk
 import logging
+import platform
 import re
 import tkinter as tk
 from tkinter import messagebox
 from translator import OfflineTranslator
 from settings import Settings, normalize_hotkey, validate_value
 from hotkey_agent import HotkeyAgent, PYNPUT_AVAILABLE
+from notifications import show_notification
+from system_tray import SystemTray
 from sentence_pipeline import line_offsets, off_to_tk, tk_to_off
 from model_registry import (
     ModelManager,
@@ -21,6 +24,47 @@ import threading
 # Логи: технические детали (причины ошибок, сырые исключения) пишутся
 # сюда, а НЕ в пользовательский статус (Этап 14).
 logger = logging.getLogger("offline_translate.gui")
+
+# Tk-события вида ``<Control-c>`` используют keysym, который зависит от
+# текущей раскладки. Для системных сочетаний переводчика используем
+# физический keycode клавиши. Наборы соответствуют X11, Win32 и macOS Tk;
+# поэтому Ctrl+C/V/A/L работает одинаково в EN, RU и других раскладках.
+_PHYSICAL_KEYCODES = {
+    "Linux": {
+        "a": 38, "b": 56, "c": 54, "d": 40, "e": 26, "f": 41,
+        "g": 42, "h": 43, "i": 31, "j": 44, "k": 45, "l": 46,
+        "m": 58, "n": 57, "o": 32, "p": 33, "q": 24, "r": 27,
+        "s": 39, "t": 28, "u": 30, "v": 55, "w": 25, "x": 53,
+        "y": 29, "z": 52,
+        "comma": 59, "return": 36, "escape": 9,
+    },
+    "Windows": {
+        "a": 65, "b": 66, "c": 67, "d": 68, "e": 69, "f": 70,
+        "g": 71, "h": 72, "i": 73, "j": 74, "k": 75, "l": 76,
+        "m": 77, "n": 78, "o": 79, "p": 80, "q": 81, "r": 82,
+        "s": 83, "t": 84, "u": 85, "v": 86, "w": 87, "x": 88,
+        "y": 89, "z": 90,
+        "comma": 188, "return": 13, "escape": 27,
+    },
+    "Darwin": {
+        "a": 0, "b": 11, "c": 8, "d": 2, "e": 14, "f": 3,
+        "g": 5, "h": 4, "i": 34, "j": 38, "k": 40, "l": 37,
+        "m": 46, "n": 45, "o": 31, "p": 35, "q": 12, "r": 15,
+        "s": 1, "t": 17, "u": 32, "v": 9, "w": 13, "x": 7,
+        "y": 16, "z": 6,
+        "comma": 43, "return": 36, "escape": 53,
+    },
+}
+_CONTROL_MASK = 0x0004
+
+
+def _physical_key_name(event):
+    """Имя системной клавиши по физическому Tk keycode."""
+    codes = _PHYSICAL_KEYCODES.get(platform.system(), {})
+    for name, code in codes.items():
+        if event.keycode == code:
+            return name
+    return None
 
 # Настройка внешнего вида
 ctk.set_appearance_mode("Dark")  # Темная тема (или "Light", "System")
@@ -61,13 +105,15 @@ PALETTES = {
         "hl": "#3b4768",
     },
     "light": {
-        "bg": "#eff1f5", "field": "#ffffff", "panel": "#ccd0da",
-        "panel_hover": "#bcc2d0", "scrollbar": "#bcc2d0",
-        "scrollbar_hover": "#aab2c4",
-        "accent": "#1e66f5", "accent_hover": "#3b82f6", "accent_text": "#eff1f5",
-        "text": "#4c4f69", "muted": "#6c7086",
-        "success": "#40a02b", "error": "#d20f39", "pending": "#fe640b",
-        "hl": "#d2e0fd",
+        # Контрастная светлая палитра: тёмный текст на светлых полях и
+        # различимые состояния кнопок, статуса и подсветки.
+        "bg": "#f5f7fb", "field": "#ffffff", "panel": "#e3e8f0",
+        "panel_hover": "#d4dce8", "scrollbar": "#b6c2d2",
+        "scrollbar_hover": "#9eacbf",
+        "accent": "#1d4ed8", "accent_hover": "#1e40af", "accent_text": "#ffffff",
+        "text": "#1f2937", "muted": "#4b5563",
+        "success": "#166534", "error": "#b91c1c", "pending": "#b45309",
+        "hl": "#dbeafe",
     },
 }
 
@@ -80,7 +126,7 @@ class TranslatorApp(ctk.CTk):
     def __init__(self):
         super().__init__()
 
-        self.title("Офлайн Переводчик (EN ↔ RU)")
+        self.title("Офлайн Переводчик (Английский ↔ Русский)")
         self.geometry("900x600")
         self.resizable(True, True)
         # Минимальный размер окна: меньше него сетка «два поля бок о бок»
@@ -104,8 +150,8 @@ class TranslatorApp(ctk.CTk):
         # Сохранённый
         # model_id (settings.json) разрешается против направления:
         # неизвестная/несовместимая модель — дефолт направления (исправленное
-        # значение сохраняется), недоступная — фолбэк на доступный дефолт
-        # (выбор пользователя не меняется, note — в статусе).
+        # значение сохраняется). Marian допускается без пользовательского
+        # кэша: его загрузит backend из бандля или сети.
         self.model_manager = ModelManager()
         self._active_model_id, persist_id, self._model_note = \
             self.model_manager.resolve_runtime(
@@ -193,10 +239,15 @@ class TranslatorApp(ctk.CTk):
         self._settings_dialog = None
         self._hotkey_agent = None
         self._agent_error = None
+        self._tray = SystemTray(self, self._show_from_tray, self._quit_app)
+        self._notification_after_translation = False
+        self._pending_agent_text = None
 
         self.setup_ui()
         self._bind_hotkeys()
         self._start_hotkey_agent()
+        if not self._tray.start():
+            logger.warning("Системный трей недоступен")
 
         # Начинаем опрос очереди в главном потоке.
         self._process_gui_queue()
@@ -282,7 +333,7 @@ class TranslatorApp(ctk.CTk):
                                           hover_color=self._pal["panel_hover"],
                                           text_color=self._pal["text"])
         self.settings_btn.pack(side="left", padx=(0, 10))
-        self.header_subtitle = ctk.CTkLabel(header_right, text="EN ↔ RU · работает офлайн",
+        self.header_subtitle = ctk.CTkLabel(header_right, text="Английский ↔ Русский · работает офлайн",
                                             font=("Arial", 12),
                                             text_color=self._pal["muted"])
         self.header_subtitle.pack(side="left")
@@ -298,7 +349,7 @@ class TranslatorApp(ctk.CTk):
         main_frame.grid_rowconfigure(2, weight=1, minsize=150)
 
         # Поле ввода (Английский)
-        self.input_label = ctk.CTkLabel(main_frame, text="Исходный текст (EN)",
+        self.input_label = ctk.CTkLabel(main_frame, text="Исходный текст (Английский)",
                                         font=("Arial", 13, "bold"),
                                         text_color=self._pal["text"])
         self.input_label.grid(row=1, column=0, padx=10, pady=(10, 4), sticky="w")
@@ -311,6 +362,7 @@ class TranslatorApp(ctk.CTk):
         # поэтому смещения _unit_map и hover не зависят от размера окна.
         self.input_text = ctk.CTkTextbox(main_frame, font=("Arial", 14),
                                          wrap="word",
+                                         undo=True,
                                          fg_color=self._pal["field"], text_color=self._pal["text"],
                                          corner_radius=10,
                                          scrollbar_button_color=self._pal["scrollbar"],
@@ -322,7 +374,7 @@ class TranslatorApp(ctk.CTk):
         self.input_text.bind("<<Modified>>", self._on_input_modified)
 
         # Поле вывода (Русский)
-        self.output_label = ctk.CTkLabel(main_frame, text="Перевод (RU)",
+        self.output_label = ctk.CTkLabel(main_frame, text="Перевод (Русский)",
                                          font=("Arial", 13, "bold"),
                                          text_color=self._pal["accent"])
         self.output_label.grid(row=1, column=1, padx=10, pady=(10, 4), sticky="w")
@@ -331,6 +383,7 @@ class TranslatorApp(ctk.CTk):
         # визуальный, текст и смещения не меняются.
         self.output_text = ctk.CTkTextbox(main_frame, font=("Arial", 14),
                                           wrap="word",
+                                          undo=True,
                                           fg_color=self._pal["field"], text_color=self._pal["text"],
                                           corner_radius=10,
                                           scrollbar_button_color=self._pal["scrollbar"],
@@ -354,11 +407,11 @@ class TranslatorApp(ctk.CTk):
                                          font=("Arial", 13), text_color=self._pal["text"])
         self.direction_caption.pack(side="left", padx=(14, 6), pady=8)
 
-        self.direction_var = ctk.StringVar(value="EN → RU")
+        self.direction_var = ctk.StringVar(value="Английский → Русский")
         self.direction_menu = ctk.CTkOptionMenu(
             self.direction_frame,
             variable=self.direction_var,
-            values=["EN → RU", "RU → EN"],
+            values=["Английский → Русский", "Русский → Английский"],
             command=self.change_direction,
             width=130, height=34,
             font=("Arial", 13), corner_radius=8,
@@ -503,6 +556,9 @@ class TranslatorApp(ctk.CTk):
             # приложение — при любом пути сюда: старт, смена модели,
             # фолбэк, смена направления (Этап 14).
             self._update_model_display()
+            if self._pending_agent_text is not None:
+                self._pending_agent_text = None
+                self._start_translation_internal("agent")
             # Ready-статус: готовность + фактическая модель + заметка о
             # фолбэке, если была (_model_note потребляется
             # _ready_status_text). Недоступный глобальный хоткей —
@@ -571,12 +627,23 @@ class TranslatorApp(ctk.CTk):
             self._active_text = None
             self.translate_btn.configure(state="normal")
             self._set_status("ready")
+            if (generation == self._translation_generation
+                    and self._notification_after_translation):
+                self._notification_after_translation = False
+                shown = show_notification(
+                    "Перевод готов", result,
+                    self.settings.get("notification_duration_sec", 5))
+                if not shown:
+                    logger.warning("Не удалось показать уведомление")
+                    if self.state() == "withdrawn":
+                        self._show_from_tray()
             # После завершения: коалесированный запрос (если текст не изменился).
             self._continue_pending_translation()
         elif kind == "translation_error":
             generation, error = message[1], message[2]
             self._translation_busy = False
             self._active_text = None
+            self._notification_after_translation = False
             self.translate_btn.configure(state="normal")
             if generation == self._translation_generation:
                 # Операция актуальна: подсветка снимается, уже переведённые
@@ -632,6 +699,7 @@ class TranslatorApp(ctk.CTk):
         # <<Modified>> — самого действия очистки новый перевод не запускает.
         self._cancel_auto()
         self._pending_text = None
+        self._notification_after_translation = False
         self.input_text.delete("1.0", "end")
         self.output_text.delete("1.0", "end")
         # Поля пусты — накопленное сопоставление юнитов недействительно.
@@ -645,7 +713,11 @@ class TranslatorApp(ctk.CTk):
 
         Смена модели под новое направление (если нужна) — в _set_direction
         (Этап 10)."""
-        self._set_direction("ru-en" if value == "RU → EN" else "en-ru")
+        # Старые подписи оставляем принимаемыми для совместимости с уже
+        # открытыми окнами/автоматизированными сценариями после обновления.
+        self._set_direction(
+            "ru-en" if value in ("Русский → Английский", "RU → EN")
+            else "en-ru")
 
     def swap_fields(self):
         """Меняет содержимое полей и направление перевода местами."""
@@ -657,6 +729,7 @@ class TranslatorApp(ctk.CTk):
         # <<Modified>>, поэтому рекурсивных/двойных событий нет).
         self._cancel_auto()
         self._pending_text = None
+        self._notification_after_translation = False
 
         self.input_text.delete("1.0", "end")
         self.output_text.delete("1.0", "end")
@@ -724,7 +797,7 @@ class TranslatorApp(ctk.CTk):
 
     def _update_model_display(self):
         """Подпись под заголовком: направление + текущая модель (Этап 10)."""
-        dir_label = "RU → EN" if self.direction == "ru-en" else "EN → RU"
+        dir_label = "Русский → Английский" if self.direction == "ru-en" else "Английский → Русский"
         try:
             model = self._model_short_name()
         except ModelNotFoundError:
@@ -744,6 +817,7 @@ class TranslatorApp(ctk.CTk):
         """
         self._cancel_auto()
         self._pending_text = None
+        self._notification_after_translation = False
         self._translation_generation += 1
         self._reset_sentence_mapping()
         self._apply_direction(direction)
@@ -762,7 +836,7 @@ class TranslatorApp(ctk.CTk):
             self.settings.save()
             note = ("Модель %s не поддерживает направление %s — использую %s"
                     % (old_name or "—",
-                       "RU→EN" if direction == "ru-en" else "EN→RU",
+                       "Русский → Английский" if direction == "ru-en" else "Английский → Русский",
                        new_name))
         self._active_model_id = run_id
         self._model_note = note
@@ -1158,13 +1232,13 @@ class TranslatorApp(ctk.CTk):
         """Устанавливает направление и обновляет меню с подписями полей."""
         self.direction = direction
         if direction == "ru-en":
-            self.direction_var.set("RU → EN")
-            self.input_label.configure(text="Исходный текст (RU)")
-            self.output_label.configure(text="Перевод (EN)")
+            self.direction_var.set("Русский → Английский")
+            self.input_label.configure(text="Исходный текст (Русский)")
+            self.output_label.configure(text="Перевод (Английский)")
         else:
-            self.direction_var.set("EN → RU")
-            self.input_label.configure(text="Исходный текст (EN)")
-            self.output_label.configure(text="Перевод (RU)")
+            self.direction_var.set("Английский → Русский")
+            self.input_label.configure(text="Исходный текст (Английский)")
+            self.output_label.configure(text="Перевод (Русский)")
 
     def _set_theme(self, theme: str):
         """Применяет цветовую тему к основному окну (без перезапуска)."""
@@ -1175,6 +1249,7 @@ class TranslatorApp(ctk.CTk):
         self._setup_highlight_tags()
         for box in (self.input_text, self.output_text):
             box.configure(fg_color=pal["field"],
+                          text_color=pal["text"],
                           scrollbar_button_color=pal["scrollbar"],
                           scrollbar_button_hover_color=pal["scrollbar_hover"])
         self.header_title.configure(text_color=pal["text"])
@@ -1209,21 +1284,123 @@ class TranslatorApp(ctk.CTk):
     #  Горячие клавиши окна (перенос из старой версии)                    #
     # ------------------------------------------------------------------ #
     def _bind_hotkeys(self):
-        # bind_all: срабатывают, где бы фокус ни был (поле, кнопки).
-        self.bind_all("<Control-Return>", self._on_hotkey_translate)    # Ctrl+Enter — перевести
-        self.bind_all("<Control-l>", self._on_hotkey_clear)             # Ctrl+L — очистить
-        self.bind_all("<Control-comma>", self._on_hotkey_settings)      # Ctrl+, — настройки
+        # Один обработчик получает физический keycode, а не keysym текущей
+        # раскладки. Это важно, например, для Ctrl+V в русской раскладке.
+        self.bind_all("<KeyPress>", self._on_physical_hotkey, add="+")
+        # Clipboard-команды должны быть на widget bind-tag: class binding Tk
+        # обрабатывает Ctrl+V раньше bind_all и иначе вставил бы текст дважды.
+        for box in (self.input_text, self.output_text):
+            box._textbox.bind("<KeyPress>", self._on_physical_hotkey,
+                              add="+")
         # Escape на главном окне: закрыть окно настроек (если открыто).
         self.bind("<Escape>", self._on_hotkey_escape)
-        # Ctrl+A — на каждом поле отдельно (не bind_all): выделяется всё
-        # только в том поле, где нажата комбинация (CTkTextbox.bind
-        # проксирует биндинг на внутренний Text).
-        self.input_text.bind("<Control-a>", self._on_select_all)
-        self.output_text.bind("<Control-a>", self._on_select_all)
-        # Ctrl+C в поле перевода — копирует ВЕСЬ перевод (поведение старой
-        # версии). В исходном поле системный Copy не перехватываем;
-        # Ctrl+X (вырезать) — стандартное поведение текстовых полей.
-        self.output_text.bind("<Control-c>", self._on_hotkey_copy)
+
+    def _on_physical_hotkey(self, event):
+        """Обрабатывает системные сочетания по физическим keycode."""
+        key = _physical_key_name(event)
+        if key is None:
+            return None
+        ctrl = bool(event.state & _CONTROL_MASK)
+        if not ctrl:
+            if key == "escape":
+                return self._on_hotkey_escape(event)
+            return None
+        if key == "return":
+            return self._on_hotkey_translate(event)
+        if key == "l":
+            return self._on_hotkey_clear(event)
+        if key == "comma":
+            return self._on_hotkey_settings(event)
+        widget = event.widget
+        if key == "a":
+            return self._select_all_physical(widget)
+        if key == "c":
+            return self._copy_physical(widget)
+        if key == "v":
+            return self._paste_physical(widget)
+        if key == "x":
+            return self._cut_physical(widget)
+        if key == "z":
+            return self._undo_physical(widget)
+        return None
+
+    @staticmethod
+    def _text_widget(widget):
+        return isinstance(widget, (tk.Text, tk.Entry))
+
+    def _select_all_physical(self, widget):
+        if not self._text_widget(widget):
+            return None
+        if isinstance(widget, tk.Text):
+            widget.tag_add("sel", "1.0", "end")
+        else:
+            widget.selection_range(0, "end")
+        return "break"
+
+    def _selected_text(self, widget):
+        try:
+            if isinstance(widget, tk.Text):
+                ranges = widget.tag_ranges("sel")
+                return widget.get(*ranges) if ranges else ""
+            if isinstance(widget, tk.Entry) and widget.selection_present():
+                return widget.selection_get()
+        except tk.TclError:
+            return ""
+        return ""
+
+    def _copy_physical(self, widget):
+        if not self._text_widget(widget):
+            return None
+        if widget is self.output_text._textbox:
+            self.copy_translation()
+        else:
+            selected = self._selected_text(widget)
+            if selected:
+                self.clipboard_clear()
+                self.clipboard_append(selected)
+        return "break"
+
+    def _paste_physical(self, widget):
+        if not self._text_widget(widget):
+            return None
+        try:
+            value = self.clipboard_get()
+            if isinstance(widget, tk.Text):
+                ranges = widget.tag_ranges("sel")
+                if ranges:
+                    widget.delete(*ranges)
+                widget.insert("insert", value)
+            else:
+                if widget.selection_present():
+                    widget.delete("sel.first", "sel.last")
+                widget.insert("insert", value)
+        except tk.TclError:
+            pass
+        return "break"
+
+    def _cut_physical(self, widget):
+        if not self._text_widget(widget):
+            return None
+        selected = self._selected_text(widget)
+        if selected:
+            self.clipboard_clear()
+            self.clipboard_append(selected)
+            try:
+                widget.delete("sel.first", "sel.last")
+            except tk.TclError:
+                pass
+        return "break"
+
+    def _undo_physical(self, widget):
+        """Отменяет последнее изменение в активном текстовом поле."""
+        if not self._text_widget(widget):
+            return None
+        try:
+            widget.edit_undo()
+        except tk.TclError:
+            # Пустая история отмены — обычная ситуация, не ошибка для UI.
+            pass
+        return "break"
 
     def _on_hotkey_translate(self, _event):
         """Ctrl+Enter: немедленный перевод, без ожидания дебаунса."""
@@ -1487,14 +1664,15 @@ class TranslatorApp(ctk.CTk):
         self._cancel_auto()
         self.input_text.delete("1.0", "end")
         self.input_text.insert("1.0", text)
-        # Переводим сразу (без debounce), окно поднимаем — результат виден.
-        self.start_translation()
-        try:
-            self.attributes("-topmost", True)
-            self.lift()
-        except tk.TclError:
-            pass
-        self.after(1500, self._drop_topmost)
+        # Переводим сразу (без debounce), а результат после завершения
+        # показываем системным уведомлением — окно может оставаться в трее.
+        self._notification_after_translation = True
+        if self.translator is None:
+            # Смена направления могла запустить загрузку другой модели.
+            # Запрос будет выполнен после init_done.
+            self._pending_agent_text = text
+        else:
+            self.start_translation()
 
     def _drop_topmost(self):
         try:
@@ -1512,7 +1690,20 @@ class TranslatorApp(ctk.CTk):
         self._settings_dialog = SettingsDialog(self)
 
     def _on_window_close(self):
+        if self._tray.active:
+            self._cancel_auto()
+            self.withdraw()
+            return
+        self._quit_app()
+
+    def _show_from_tray(self):
+        self.deiconify()
+        self.lift()
+        self.focus_force()
+
+    def _quit_app(self):
         self._stop_hotkey_agent()
+        self._tray.stop()
         self.destroy()
 
 
@@ -1522,8 +1713,13 @@ class TranslatorApp(ctk.CTk):
 
 # Языки/тема в интерфейсе — по-русски, в настройках хранятся внутренние коды.
 # Текущая архитектура поддерживает только EN/RU (модели Helsinki-NLP opus-mt).
-_LANG_LABELS = {"en": "Английский (EN)", "ru": "Русский (RU)"}
-_LANG_FROM_LABEL = {v: k for k, v in _LANG_LABELS.items()}
+_LANG_LABELS = {"en": "Английский", "ru": "Русский"}
+_LANG_FROM_LABEL = {
+    **{v: k for k, v in _LANG_LABELS.items()},
+    # Совместимость с ранее сохранёнными/созданными UI-сценариями.
+    "Английский (EN)": "en",
+    "Русский (RU)": "ru",
+}
 _THEME_LABELS = {"dark": "Тёмная", "light": "Светлая"}
 _THEME_FROM_LABEL = {v: k for k, v in _THEME_LABELS.items()}
 
@@ -1535,7 +1731,8 @@ _SETTING_NAMES = {
     "theme": "тема",
     "autotranslate": "автоперевод",
     "slow_after_sec": "задержка статуса «Перевод...»",
-    "debounce_sec": "debounce ввода",
+    "notification_duration_sec": "время жизни уведомления",
+    "debounce_sec": "задержка автоперевода",
     "max_text_length": "макс. длина текста",
     "filter_cyrillic": "фильтр кириллицы",
 }
@@ -1652,6 +1849,8 @@ class SettingsDialog(ctk.CTkToplevel):
                              placeholder_text_color=pal["muted"])
             e.insert(0, value)
             e.grid(row=row, column=1, sticky="ew", pady=(0, 2))
+            e._entry.bind("<KeyPress>", self.app._on_physical_hotkey,
+                          add="+")
             self._make_resizable(e, min_width=140)
             row += 1
             return e
@@ -1740,11 +1939,15 @@ class SettingsDialog(ctk.CTkToplevel):
         self.autotranslate_var = make_switch(
             "после остановки набора текста", s.get("autotranslate"))
 
-        row_label("Дебаунс, сек")
+        row_label("Задержка автоперевода, сек")
         self.debounce_entry = make_entry(str(s.get("debounce_sec")))
 
-        row_label("Timeout, сек")
+        row_label("Задержка статуса, сек")
         self.slow_entry = make_entry(str(s.get("slow_after_sec")))
+
+        row_label("Уведомление, сек")
+        self.notification_duration_entry = make_entry(
+            str(s.get("notification_duration_sec")))
 
         row_label("Макс. длина, символов")
         self.max_len_entry = make_entry(str(s.get("max_text_length")))
@@ -1763,6 +1966,8 @@ class SettingsDialog(ctk.CTkToplevel):
                                          border_color=pal["panel_hover"],
                                          text_color=pal["text"])
         self.hotkey_entry.insert(0, s.get("hotkey"))
+        self.hotkey_entry._entry.bind(
+            "<KeyPress>", self.app._on_physical_hotkey, add="+")
         self.hotkey_entry.pack(side="left")
         ctk.CTkButton(hk_frame, text="Записать", width=90, height=32,
                       font=("Arial", 13), corner_radius=8,
@@ -1849,7 +2054,8 @@ class SettingsDialog(ctk.CTkToplevel):
             return
         self._syncing = True
         try:
-            other = "Русский (RU)" if value == "Английский (EN)" else "Английский (EN)"
+            other = ("Русский" if value in ("Английский", "Английский (EN)")
+                     else "Английский")
             self.target_lang_var.set(other)
         finally:
             self._syncing = False
@@ -1862,7 +2068,8 @@ class SettingsDialog(ctk.CTkToplevel):
             return
         self._syncing = True
         try:
-            other = "Английский (EN)" if value == "Русский (RU)" else "Русский (RU)"
+            other = ("Английский" if value in ("Русский", "Русский (RU)")
+                     else "Русский")
             self.source_lang_var.set(other)
         finally:
             self._syncing = False
@@ -1889,7 +2096,7 @@ class SettingsDialog(ctk.CTkToplevel):
         заменено дефолтом при сохранении.
         """
         manager = self.app.model_manager
-        dir_label = "RU → EN" if direction == "ru-en" else "EN → RU"
+        dir_label = "Русский → Английский" if direction == "ru-en" else "Английский → Русский"
         labels = []
         for desc in manager.list_models():
             if not desc.supports_direction(direction):
@@ -1956,8 +2163,8 @@ class SettingsDialog(ctk.CTkToplevel):
                         if default is not None and default.id != model_id
                         else "")
             self.model_note_label.configure(
-                text="Недоступна локально. Автоматическая загрузка "
-                     "модели не выполняется." + fallback,
+                text="Нет локального кэша. При запуске модель будет взята "
+                     "из бандля или загружена из HuggingFace." + fallback,
                 text_color=pal["pending"])
 
     # ------------------------------------------------------------------ #
@@ -2001,6 +2208,10 @@ class SettingsDialog(ctk.CTkToplevel):
             return keysym.lower()
         return keysym.lower()
 
+    def _hk_event_name(self, event) -> str:
+        """Имя основной клавиши по физическому коду при записи хоткея."""
+        return _physical_key_name(event) or self._hk_key_name(event.keysym)
+
     def _hk_on_key(self, event):
         if not self._recording:
             return None
@@ -2010,7 +2221,7 @@ class SettingsDialog(ctk.CTkToplevel):
             return "break"
         if event.keysym in _HK_IGNORE_KEYS:
             return None
-        name = self._hk_key_name(event.keysym)
+        name = self._hk_event_name(event)
         if name in _HK_MODIFIER_NAMES:
             if name not in self._hk_mods:
                 self._hk_mods.append(name)
@@ -2024,7 +2235,7 @@ class SettingsDialog(ctk.CTkToplevel):
             return None
         if event.keysym in _HK_IGNORE_KEYS:
             return None
-        name = self._hk_key_name(event.keysym)
+        name = self._hk_event_name(event)
         if name in _HK_MODIFIER_NAMES:
             if name in self._hk_mods:
                 self._hk_mods.remove(name)
@@ -2052,6 +2263,8 @@ class SettingsDialog(ctk.CTkToplevel):
             "autotranslate": bool(self.autotranslate_var.get()),
             "debounce_sec": self.debounce_entry.get().strip().replace(",", "."),
             "slow_after_sec": self.slow_entry.get().strip().replace(",", "."),
+            "notification_duration_sec": (
+                self.notification_duration_entry.get().strip().replace(",", ".")),
             "max_text_length": self.max_len_entry.get().strip(),
             "filter_cyrillic": bool(self.filter_var.get()),
             "hotkey": self.hotkey_entry.get().strip(),
@@ -2115,7 +2328,3 @@ class SettingsDialog(ctk.CTkToplevel):
 if __name__ == "__main__":
     app = TranslatorApp()
     app.mainloop()
-
-
-
-

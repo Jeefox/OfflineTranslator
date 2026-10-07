@@ -40,6 +40,7 @@ DEFAULTS: dict = {
     "theme": "dark",                # "dark" | "light"
     "autotranslate": True,          # автоперевод после остановки набора
     "slow_after_sec": 3,            # задержка статуса «Перевод...» (0 — сразу)
+    "notification_duration_sec": 5, # время жизни уведомления с переводом
     "debounce_sec": 1.5,            # debounce ввода (сек.)
     "max_text_length": 5000,        # лимит символов (0 = без лимита)
     "filter_cyrillic": True,        # автоопределение направления по написанию
@@ -168,6 +169,11 @@ def validate_value(key: str, value) -> tuple[bool, object]:
         num = _coerce_number(value)
         if num is None or not (0 <= num <= 600):
             return False, DEFAULTS["slow_after_sec"]
+        return True, float(num)
+    if key == "notification_duration_sec":
+        num = _coerce_number(value)
+        if num is None or not (1 <= num <= 120):
+            return False, DEFAULTS["notification_duration_sec"]
         return True, float(num)
     if key == "model_id":
         # Лёгкая проверка: id — непустая строка (или None — «модель не

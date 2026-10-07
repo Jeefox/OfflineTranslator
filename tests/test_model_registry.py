@@ -486,7 +486,9 @@ if translator is not None:
         check("facade9_gguf_path_on_marian", "gguf_path" in str(e), str(e))
 
 
-    # «Бомбы»: при ошибках разрешения бэкенд НЕ создаётся вообще
+    # GGUF должен по-прежнему отбрасываться до создания backend, а Marian
+    # можно создавать и при пустом кэше: backend сам выполнит загрузку из
+    # встроенного кэша или HuggingFace.
     class _BombBackend:
         def __init__(self, *args, **kwargs):
             raise AssertionError(
@@ -495,7 +497,7 @@ if translator is not None:
     _orig_marian9 = translator.MarianBackend
     _orig_llama9 = translator.LlamaCppBackend
     _saved_env9 = os.environ.pop(GGUF_ENV, None)
-    translator.MarianBackend = _BombBackend
+    translator.MarianBackend = _FakeMarian9
     translator.LlamaCppBackend = _BombBackend
     empty_cache9 = os.path.join(TMP9, "empty_cache")
     os.makedirs(empty_cache9, exist_ok=True)
@@ -506,13 +508,14 @@ if translator is not None:
             check("facade9_unknown_no_backend", False)
         except ModelNotFoundError:
             check("facade9_unknown_no_backend", True)
-        # Marian-модель не в кэше — MarianBackend не создаётся
-        try:
-            translator.OfflineTranslator(
-                model_id="marian-en-ru", cache_dir=empty_cache9)
-            check("facade9_marian_unavailable_no_backend", False)
-        except ModelUnavailableError:
-            check("facade9_marian_unavailable_no_backend", True)
+        # Marian-модель не в кэше — backend создаётся для локальной
+        # загрузки/первоначального скачивания.
+        _FakeMarian9.instances.clear()
+        facade_empty = translator.OfflineTranslator(
+            model_id="marian-en-ru", cache_dir=empty_cache9)
+        check("facade9_marian_empty_cache_allowed",
+              isinstance(facade_empty.backend, _FakeMarian9)
+              and len(_FakeMarian9.instances) == 1)
         # GGUF без env и без gguf_path — LlamaCppBackend не создаётся
         try:
             translator.OfflineTranslator(model_id="hy-mt2-1.8b")
@@ -527,18 +530,17 @@ if translator is not None:
         else:
             os.environ.pop(GGUF_ENV, None)
 
-    # --- Доступность: понятная ошибка (id, источник, «не скачивается») ---
+    # Marian без локального кэша не является ошибкой разрешения: загрузка
+    # выполняется самим backend (из бандля, кэша или сети).
+    _FakeMarian9.instances.clear()
+    translator.MarianBackend = _FakeMarian9
     try:
-        translator.OfflineTranslator(model_id="marian-en-ru",
-                                     cache_dir=empty_cache9)
-        check("facade9_marian_unavailable_msg", False)
-    except ModelUnavailableError as e:
-        msg = str(e)
-        check("facade9_marian_unavailable_msg",
-              "marian-en-ru" in msg
-              and "Helsinki-NLP/opus-mt-en-ru" in msg
-              and empty_cache9 in msg
-              and "не скачивается" in msg, msg)
+        facade_empty = translator.OfflineTranslator(
+            model_id="marian-en-ru", cache_dir=empty_cache9)
+    finally:
+        translator.MarianBackend = _orig_marian9
+    check("facade9_marian_empty_cache_msg_removed",
+          isinstance(facade_empty.backend, _FakeMarian9))
     os.environ.pop(GGUF_ENV, None)
     try:
         translator.OfflineTranslator(model_id="hy-mt2-1.8b")

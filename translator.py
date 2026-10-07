@@ -190,9 +190,9 @@ class OfflineTranslator(TranslationService):
         Ошибки:
           - неизвестный model_id — ModelNotFoundError (реестр; список
             известных id);
-          - модель отсутствует локально — ModelUnavailableError
-            (сообщение указывает, где ожидается локальный источник;
-            скачивание НЕ выполняется);
+          - для GGUF отсутствующий локальный файл — ModelUnavailableError;
+            Marian допускается без предварительного кэша: он загружается
+            из встроенного бандля, пользовательского кэша или HuggingFace;
           - gguf_path для не-GGUF-модели — ValueError.
         """
         manager = ModelManager(cache_dir=cache_dir)
@@ -204,18 +204,10 @@ class OfflineTranslator(TranslationService):
                 "модели backend=%r."
                 % (model_id, descriptor.backend))
         if descriptor.backend == "marian":
-            if not manager.is_model_available(model_id):
-                raise ModelUnavailableError(
-                    "Модель %r (%s) сейчас недоступна локально: HF-модель "
-                    "%s не найдена в кэше %s. Модель не скачивается "
-                    "автоматически — положите модель в локальный HF-кэш "
-                    "или выберите доступную модель "
-                    "(ModelManager.get_available_models())."
-                    % (model_id, descriptor.name,
-                       descriptor.hf_model_id, manager.cache_dir))
-            # MarianBackend загружает модели обоих направлений (как и
-            # legacy-конструктор); ограничение направления — на уровне
-            # фасада (_model_directions), поведение загрузки не меняется.
+            # Не блокируем Marian из-за пустого кэша: backend должен иметь
+            # возможность скачать модель при первом запуске, если интернет
+            # доступен. В офлайн-бандле CacheManager предварительно
+            # восстановит вложенный кэш из _MEIPASS/cache.
             return MarianBackend(cache_dir=cache_dir), descriptor.directions
         if descriptor.backend == "llama_cpp":
             if gguf_path is not None:
