@@ -210,7 +210,7 @@ def default_registry() -> ModelRegistry:
     # два direction-specific дескриптора (так работает MarianBackend).
     registry.register(ModelDescriptor(
         id="marian-en-ru",
-        name="Marian EN → RU (Helsinki-NLP/opus-mt-en-ru)",
+        name="Marian Английский → Русский (Helsinki-NLP/opus-mt-en-ru)",
         backend="marian",
         directions=("en-ru",),
         source="HuggingFace: Helsinki-NLP/opus-mt-en-ru (локальный HF-кэш)",
@@ -218,7 +218,7 @@ def default_registry() -> ModelRegistry:
     ))
     registry.register(ModelDescriptor(
         id="marian-ru-en",
-        name="Marian RU → EN (Helsinki-NLP/opus-mt-ru-en)",
+        name="Marian Русский → Английский (Helsinki-NLP/opus-mt-ru-en)",
         backend="marian",
         directions=("ru-en",),
         source="HuggingFace: Helsinki-NLP/opus-mt-ru-en (локальный HF-кэш)",

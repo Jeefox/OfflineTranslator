@@ -105,13 +105,15 @@ PALETTES = {
         "hl": "#3b4768",
     },
     "light": {
-        "bg": "#eff1f5", "field": "#ffffff", "panel": "#ccd0da",
-        "panel_hover": "#bcc2d0", "scrollbar": "#bcc2d0",
-        "scrollbar_hover": "#aab2c4",
-        "accent": "#1e66f5", "accent_hover": "#3b82f6", "accent_text": "#eff1f5",
-        "text": "#4c4f69", "muted": "#6c7086",
-        "success": "#40a02b", "error": "#d20f39", "pending": "#fe640b",
-        "hl": "#d2e0fd",
+        # Контрастная светлая палитра: тёмный текст на светлых полях и
+        # различимые состояния кнопок, статуса и подсветки.
+        "bg": "#f5f7fb", "field": "#ffffff", "panel": "#e3e8f0",
+        "panel_hover": "#d4dce8", "scrollbar": "#b6c2d2",
+        "scrollbar_hover": "#9eacbf",
+        "accent": "#1d4ed8", "accent_hover": "#1e40af", "accent_text": "#ffffff",
+        "text": "#1f2937", "muted": "#4b5563",
+        "success": "#166534", "error": "#b91c1c", "pending": "#b45309",
+        "hl": "#dbeafe",
     },
 }
 
@@ -124,7 +126,7 @@ class TranslatorApp(ctk.CTk):
     def __init__(self):
         super().__init__()
 
-        self.title("Офлайн Переводчик (EN ↔ RU)")
+        self.title("Офлайн Переводчик (Английский ↔ Русский)")
         self.geometry("900x600")
         self.resizable(True, True)
         # Минимальный размер окна: меньше него сетка «два поля бок о бок»
@@ -331,7 +333,7 @@ class TranslatorApp(ctk.CTk):
                                           hover_color=self._pal["panel_hover"],
                                           text_color=self._pal["text"])
         self.settings_btn.pack(side="left", padx=(0, 10))
-        self.header_subtitle = ctk.CTkLabel(header_right, text="EN ↔ RU · работает офлайн",
+        self.header_subtitle = ctk.CTkLabel(header_right, text="Английский ↔ Русский · работает офлайн",
                                             font=("Arial", 12),
                                             text_color=self._pal["muted"])
         self.header_subtitle.pack(side="left")
@@ -347,7 +349,7 @@ class TranslatorApp(ctk.CTk):
         main_frame.grid_rowconfigure(2, weight=1, minsize=150)
 
         # Поле ввода (Английский)
-        self.input_label = ctk.CTkLabel(main_frame, text="Исходный текст (EN)",
+        self.input_label = ctk.CTkLabel(main_frame, text="Исходный текст (Английский)",
                                         font=("Arial", 13, "bold"),
                                         text_color=self._pal["text"])
         self.input_label.grid(row=1, column=0, padx=10, pady=(10, 4), sticky="w")
@@ -372,7 +374,7 @@ class TranslatorApp(ctk.CTk):
         self.input_text.bind("<<Modified>>", self._on_input_modified)
 
         # Поле вывода (Русский)
-        self.output_label = ctk.CTkLabel(main_frame, text="Перевод (RU)",
+        self.output_label = ctk.CTkLabel(main_frame, text="Перевод (Русский)",
                                          font=("Arial", 13, "bold"),
                                          text_color=self._pal["accent"])
         self.output_label.grid(row=1, column=1, padx=10, pady=(10, 4), sticky="w")
@@ -405,11 +407,11 @@ class TranslatorApp(ctk.CTk):
                                          font=("Arial", 13), text_color=self._pal["text"])
         self.direction_caption.pack(side="left", padx=(14, 6), pady=8)
 
-        self.direction_var = ctk.StringVar(value="EN → RU")
+        self.direction_var = ctk.StringVar(value="Английский → Русский")
         self.direction_menu = ctk.CTkOptionMenu(
             self.direction_frame,
             variable=self.direction_var,
-            values=["EN → RU", "RU → EN"],
+            values=["Английский → Русский", "Русский → Английский"],
             command=self.change_direction,
             width=130, height=34,
             font=("Arial", 13), corner_radius=8,
@@ -711,7 +713,11 @@ class TranslatorApp(ctk.CTk):
 
         Смена модели под новое направление (если нужна) — в _set_direction
         (Этап 10)."""
-        self._set_direction("ru-en" if value == "RU → EN" else "en-ru")
+        # Старые подписи оставляем принимаемыми для совместимости с уже
+        # открытыми окнами/автоматизированными сценариями после обновления.
+        self._set_direction(
+            "ru-en" if value in ("Русский → Английский", "RU → EN")
+            else "en-ru")
 
     def swap_fields(self):
         """Меняет содержимое полей и направление перевода местами."""
@@ -791,7 +797,7 @@ class TranslatorApp(ctk.CTk):
 
     def _update_model_display(self):
         """Подпись под заголовком: направление + текущая модель (Этап 10)."""
-        dir_label = "RU → EN" if self.direction == "ru-en" else "EN → RU"
+        dir_label = "Русский → Английский" if self.direction == "ru-en" else "Английский → Русский"
         try:
             model = self._model_short_name()
         except ModelNotFoundError:
@@ -830,7 +836,7 @@ class TranslatorApp(ctk.CTk):
             self.settings.save()
             note = ("Модель %s не поддерживает направление %s — использую %s"
                     % (old_name or "—",
-                       "RU→EN" if direction == "ru-en" else "EN→RU",
+                       "Русский → Английский" if direction == "ru-en" else "Английский → Русский",
                        new_name))
         self._active_model_id = run_id
         self._model_note = note
@@ -1226,13 +1232,13 @@ class TranslatorApp(ctk.CTk):
         """Устанавливает направление и обновляет меню с подписями полей."""
         self.direction = direction
         if direction == "ru-en":
-            self.direction_var.set("RU → EN")
-            self.input_label.configure(text="Исходный текст (RU)")
-            self.output_label.configure(text="Перевод (EN)")
+            self.direction_var.set("Русский → Английский")
+            self.input_label.configure(text="Исходный текст (Русский)")
+            self.output_label.configure(text="Перевод (Английский)")
         else:
-            self.direction_var.set("EN → RU")
-            self.input_label.configure(text="Исходный текст (EN)")
-            self.output_label.configure(text="Перевод (RU)")
+            self.direction_var.set("Английский → Русский")
+            self.input_label.configure(text="Исходный текст (Английский)")
+            self.output_label.configure(text="Перевод (Русский)")
 
     def _set_theme(self, theme: str):
         """Применяет цветовую тему к основному окну (без перезапуска)."""
@@ -1243,6 +1249,7 @@ class TranslatorApp(ctk.CTk):
         self._setup_highlight_tags()
         for box in (self.input_text, self.output_text):
             box.configure(fg_color=pal["field"],
+                          text_color=pal["text"],
                           scrollbar_button_color=pal["scrollbar"],
                           scrollbar_button_hover_color=pal["scrollbar_hover"])
         self.header_title.configure(text_color=pal["text"])
@@ -1706,8 +1713,13 @@ class TranslatorApp(ctk.CTk):
 
 # Языки/тема в интерфейсе — по-русски, в настройках хранятся внутренние коды.
 # Текущая архитектура поддерживает только EN/RU (модели Helsinki-NLP opus-mt).
-_LANG_LABELS = {"en": "Английский (EN)", "ru": "Русский (RU)"}
-_LANG_FROM_LABEL = {v: k for k, v in _LANG_LABELS.items()}
+_LANG_LABELS = {"en": "Английский", "ru": "Русский"}
+_LANG_FROM_LABEL = {
+    **{v: k for k, v in _LANG_LABELS.items()},
+    # Совместимость с ранее сохранёнными/созданными UI-сценариями.
+    "Английский (EN)": "en",
+    "Русский (RU)": "ru",
+}
 _THEME_LABELS = {"dark": "Тёмная", "light": "Светлая"}
 _THEME_FROM_LABEL = {v: k for k, v in _THEME_LABELS.items()}
 
@@ -1720,7 +1732,7 @@ _SETTING_NAMES = {
     "autotranslate": "автоперевод",
     "slow_after_sec": "задержка статуса «Перевод...»",
     "notification_duration_sec": "время жизни уведомления",
-    "debounce_sec": "debounce ввода",
+    "debounce_sec": "задержка автоперевода",
     "max_text_length": "макс. длина текста",
     "filter_cyrillic": "фильтр кириллицы",
 }
@@ -1927,10 +1939,10 @@ class SettingsDialog(ctk.CTkToplevel):
         self.autotranslate_var = make_switch(
             "после остановки набора текста", s.get("autotranslate"))
 
-        row_label("Дебаунс, сек")
+        row_label("Задержка автоперевода, сек")
         self.debounce_entry = make_entry(str(s.get("debounce_sec")))
 
-        row_label("Timeout, сек")
+        row_label("Задержка статуса, сек")
         self.slow_entry = make_entry(str(s.get("slow_after_sec")))
 
         row_label("Уведомление, сек")
@@ -2042,7 +2054,8 @@ class SettingsDialog(ctk.CTkToplevel):
             return
         self._syncing = True
         try:
-            other = "Русский (RU)" if value == "Английский (EN)" else "Английский (EN)"
+            other = ("Русский" if value in ("Английский", "Английский (EN)")
+                     else "Английский")
             self.target_lang_var.set(other)
         finally:
             self._syncing = False
@@ -2055,7 +2068,8 @@ class SettingsDialog(ctk.CTkToplevel):
             return
         self._syncing = True
         try:
-            other = "Английский (EN)" if value == "Русский (RU)" else "Русский (RU)"
+            other = ("Английский" if value in ("Русский", "Русский (RU)")
+                     else "Русский")
             self.source_lang_var.set(other)
         finally:
             self._syncing = False
@@ -2082,7 +2096,7 @@ class SettingsDialog(ctk.CTkToplevel):
         заменено дефолтом при сохранении.
         """
         manager = self.app.model_manager
-        dir_label = "RU → EN" if direction == "ru-en" else "EN → RU"
+        dir_label = "Русский → Английский" if direction == "ru-en" else "Английский → Русский"
         labels = []
         for desc in manager.list_models():
             if not desc.supports_direction(direction):
