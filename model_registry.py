@@ -41,6 +41,7 @@ OfflineTranslator() по умолчанию не меняется (Marian); GUI 
 реестр в отдельном (последующем) этапе; download-функций нет.
 """
 import os
+import sys
 from dataclasses import dataclass
 from typing import Iterator, Optional, Tuple
 
@@ -261,6 +262,17 @@ def _marian_hf_cache_has_model(cache_dir: str,
     return False
 
 
+def _bundled_model_cache_dir() -> Optional[str]:
+    """Кэш моделей, вложенный в PyInstaller-бандль, если он есть."""
+    if not getattr(sys, "frozen", False):
+        return None
+    meipass = getattr(sys, "_MEIPASS", None)
+    if not meipass:
+        return None
+    path = os.path.join(meipass, "cache")
+    return path if os.path.isdir(path) else None
+
+
 def _gguf_env_available(model_marker: Optional[str]) -> bool:
     """Лёгкая проверка наличия GGUF-модели: переменная окружения
     OFFLINE_TRANSLATOR_GGUF указывает на существующий .gguf-файл, и
@@ -355,11 +367,10 @@ class ModelManager:
             перезаписывается, приложение не падает);
           - модель неизвестна для direction, если ни одна модель direction
             не поддерживает — ModelNotFoundError;
-          - модель известна и подходит по направлению, но НЕДОСТУПНА
-            локально, а дефолт direction доступен — запускать дефолт,
-            persist_id = None (выбор пользователя НЕ меняется — модель
-            может появиться позже, напр. положат GGUF-файл), note описывает
-            фолбэк; скачивание НЕ выполняется (download-функций нет);
+          - для GGUF недоступность может привести к фолбэку на доступный
+            дефолт; Marian намеренно не отбрасывается из-за пустого кэша,
+            потому что он может загрузиться из встроенного бандля или
+            скачать модель при первом запуске с интернетом;
           - иначе (модель доступна или фолбэка нет) — run_id = сохранённый
             id, persist_id = None; если при этом модель недоступна и
             фолбэка нет — сообщение о сбое даст сам запуск (clear error).
@@ -447,8 +458,12 @@ class ModelManager:
     # ------------------------------------------------------------------ #
     def _availability(self, descriptor: ModelDescriptor) -> bool:
         if descriptor.backend == "marian":
-            return _marian_hf_cache_has_model(
-                self.cache_dir, descriptor.hf_model_id)
+            if _marian_hf_cache_has_model(
+                    self.cache_dir, descriptor.hf_model_id):
+                return True
+            bundled = _bundled_model_cache_dir()
+            return bool(bundled and _marian_hf_cache_has_model(
+                bundled, descriptor.hf_model_id))
         if descriptor.backend == "llama_cpp":
             return _gguf_env_available(descriptor.gguf_model)
         return False  # неизвестный тип бэкенда — модель недоступна

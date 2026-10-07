@@ -24,14 +24,12 @@
     (dictionary_manager.default_dictionary_path), существующий словарь
     не перезаписывается;
   - зависимости: torch (CPU), transformers, sentencepiece, sacremoses,
-    customtkinter (включая темы), llama-cpp-python (libllama, опциональный
-    GGUF-runtime) — если установлены.
+    customtkinter, pystray и Pillow; llama-cpp-python и plyer — если
+    установлены.
 
 Чего НЕТ в бандле (сознательно):
-  - переводные модели. Marian (Helsinki-NLP opus-mt) скачивается из
-    HuggingFace при первом запуске в постоянный user-кэш
-    (~/.cache/OfflineTranslator/cache или %LOCALAPPDATA%\\OfflineTranslator\\cache)
-    — в этот момент нужен интернет, далее работа полностью офлайн;
+  - переводные модели. Обе базовые Marian-модели встраиваются в бандль из
+    заранее заполненного локального HF-кэша;
   - GGUF-модель (Hy-MT2) не скачивается никогда: это локальный файл
     пользователя, путь задаётся переменной окружения OFFLINE_TRANSLATOR_GGUF.
 """
@@ -43,6 +41,9 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+from dictionary_manager import model_cache_dir
+from model_registry import _marian_hf_cache_has_model
 
 ROOT = Path(__file__).resolve().parent
 DIST_DIR = ROOT / "dist"
@@ -57,10 +58,13 @@ REQUIRED_DEPS = (
     "torch",
     "sentencepiece",
     "sacremoses",
+    "pystray",
+    "PIL",
 )
 #: Опциональные зависимости: встраиваются, если установлены.
 OPTIONAL_DEPS = (
     "llama_cpp",  # GGUF-бэкенд (llama-cpp-python)
+    "plyer",      # Windows fallback для системных уведомлений
 )
 
 
@@ -109,6 +113,21 @@ def build(optional_deps: list[str]) -> None:
     is_windows = os.name == "nt"
     # Разделитель --add-data: ";" на Windows, ":" на POSIX.
     sep = ";" if is_windows else ":"
+    cache_dir = Path(model_cache_dir())
+    required_models = (
+        "Helsinki-NLP/opus-mt-en-ru",
+        "Helsinki-NLP/opus-mt-ru-en",
+    )
+    missing_models = [
+        model for model in required_models
+        if not _marian_hf_cache_has_model(str(cache_dir), model)
+    ]
+    if missing_models:
+        fail(
+            "offline bundle requires both Marian models in the local cache: "
+            + ", ".join(missing_models)
+            + "\n  Start the app once with internet access, then build again."
+        )
     args = [
         sys.executable,
         "-m",
@@ -120,6 +139,9 @@ def build(optional_deps: list[str]) -> None:
         # Словарь — read-only копия в корне бандля (_MEIPASS/dictionary.json).
         "--add-data",
         f"dictionary.json{sep}.",
+        # Базовые Marian-модели обязательны для офлайн-первого запуска.
+        "--add-data",
+        f"{cache_dir}{sep}cache",
         # Данные/бинарники/сабмодули библиотек (нативные расширения, темы, .so).
         "--collect-all",
         "customtkinter",
@@ -127,6 +149,8 @@ def build(optional_deps: list[str]) -> None:
         "torch",
         "--collect-all",
         "transformers",
+        "--collect-all",
+        "pystray",
         "--hidden-import",
         "sentencepiece",
         "--hidden-import",

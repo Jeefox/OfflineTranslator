@@ -82,7 +82,7 @@ class HistoryManager:
             print(f"Ошибка добавления в историю: {e}")
             return False
     
-    def get_history(self, limit: int = 50) -> List[Tuple[int, str, str, str, str]]:
+    def get_history(self, limit: Optional[int] = 50) -> List[Tuple[int, str, str, str, str]]:
         """Получает историю переводов.
         
         Args:
@@ -95,12 +95,18 @@ class HistoryManager:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             
-            cursor.execute('''
+            query = '''
                 SELECT id, source_text, translated_text, direction, created_at
                 FROM translations
-                ORDER BY created_at DESC
-                LIMIT ?
-            ''', (limit,))
+                ORDER BY created_at DESC, id DESC
+            '''
+            if limit is None:
+                cursor.execute(query)
+            else:
+                if not isinstance(limit, int) or limit < 0:
+                    conn.close()
+                    return []
+                cursor.execute(query + ' LIMIT ?', (limit,))
             
             results = cursor.fetchall()
             conn.close()

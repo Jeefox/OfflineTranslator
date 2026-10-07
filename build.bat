@@ -26,10 +26,10 @@ if exist "cache\*" (
         xcopy /E /I /Y "%LOCALAPPDATA%\OfflineTranslator\cache" "cache" >nul
         set BUNDLE_FLAGS=--add-data "cache;cache"
     ) else (
-        echo ВНИМАНИЕ: кэш моделей не найден.
-        echo EXE будет скачивать модели при ПЕРВОМ запуске (нужен интернет).
-        echo Чтобы встроить модели в EXE, сначала запустите приложение один раз
-        echo (python main.py), затем повторите сборку.
+        echo ОШИБКА: кэш Marian-моделей не найден.
+        echo Для офлайн-первого запуска сначала скачайте обе модели,
+        echo запустив приложение один раз с интернетом, затем повторите сборку.
+        exit /b 1
     )
 )
 echo.
