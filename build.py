@@ -6,10 +6,8 @@
     python build.py
 
 Результат:
-    dist/OfflineTranslator/               (onedir-бандль)
-    dist/OfflineTranslator/OfflineTranslator   (Linux/macOS)
-    dist/OfflineTranslator/OfflineTranslator.exe (Windows)
-    dist/OfflineTranslator/_internal/     (Python-зависимости и данные)
+    dist/OfflineTranslator                (Linux/macOS, один файл)
+    dist/OfflineTranslator.exe            (Windows, один файл)
 
 Предварительно (см. .github/workflows/build.yml):
     pip install torch --index-url https://download.pytorch.org/whl/cpu
@@ -176,8 +174,27 @@ def prune_runtime_bundle(bundle_dir: Path) -> None:
             shutil.rmtree(path, ignore_errors=True)
 
 
+def prepare_icon() -> Path:
+    """Create a small branded Windows icon without committing a binary asset."""
+    try:
+        from PIL import Image, ImageDraw
+    except ImportError:
+        fail("Pillow is required to generate the application icon")
+    path = BUILD_DIR / "offline_translator.ico"
+    image = Image.new("RGBA", (256, 256), "#1e1e2e")
+    draw = ImageDraw.Draw(image)
+    draw.rounded_rectangle((18, 18, 238, 238), radius=42, fill="#89b4fa")
+    draw.polygon((55, 92, 142, 92, 142, 65, 205, 128, 142, 191, 142, 164,
+                  55, 164), fill="#1e1e2e")
+    draw.polygon((201, 164, 114, 164, 114, 191, 51, 128, 114, 65, 114, 92,
+                  201, 92), fill="#313244")
+    image.save(path, format="ICO", sizes=[(16, 16), (32, 32), (48, 48),
+                                          (256, 256)])
+    return path
+
+
 def build(optional_deps: list[str]) -> None:
-    """Запускает PyInstaller (onedir, GUI) и проверяет результат."""
+    """Запускает PyInstaller (onefile, GUI) и проверяет результат."""
     is_windows = os.name == "nt"
     # Разделитель --add-data: ";" на Windows, ":" на POSIX.
     sep = ";" if is_windows else ":"
@@ -201,7 +218,7 @@ def build(optional_deps: list[str]) -> None:
         sys.executable,
         "-m",
         "PyInstaller",
-        "--onedir",      # каталог-бандль: без временного распаковывания, быстрый старт
+        "--onefile",     # пользователь получает один запускаемый файл
         "--windowed",    # GUI-приложение — без консольного окна
         "--name",
         APP_NAME,
@@ -229,6 +246,8 @@ def build(optional_deps: list[str]) -> None:
         "--log-level",
         "WARN",
     ]
+    if is_windows:
+        args += ["--icon", str(prepare_icon())]
     for dep in optional_deps:
         args += ["--collect-all", dep]
     args.append(ENTRY)
@@ -237,15 +256,13 @@ def build(optional_deps: list[str]) -> None:
     print("  " + " ".join(args))
     subprocess.run(args, cwd=ROOT, check=True)
 
-    # PyInstaller 6+ (onedir): dist/<name>/<binary> + dist/<name>/_internal/.
+    # PyInstaller onefile: dist/<name>[.exe].
     binary_name = f"{APP_NAME}.exe" if is_windows else APP_NAME
-    exe = DIST_DIR / APP_NAME / binary_name
+    exe = DIST_DIR / binary_name
     if not exe.exists():
         fail(f"expected executable not found: {exe}")
-    prune_runtime_bundle(DIST_DIR / APP_NAME)
-
     total = 0
-    for root, _dirs, files in os.walk(DIST_DIR / APP_NAME):
+    for root, _dirs, files in os.walk(DIST_DIR):
         for name in files:
             file = Path(root) / name
             if file.is_file():
@@ -254,22 +271,22 @@ def build(optional_deps: list[str]) -> None:
 
     print()
     print("BUILD OK!")
-    print(f"  Bundle:      {DIST_DIR / APP_NAME}")
+    print(f"  Bundle:      {exe}")
     print(f"  Executable:  {exe}")
     print(f"  Size:        {size_mb:.0f} MB")
     print("  Archiving (see .github/workflows/build.yml):")
     if is_windows:
-        print(f"    Compress-Archive -Path {DIST_DIR / APP_NAME} "
+        print(f"    Compress-Archive -Path {exe} "
               "-DestinationPath OfflineTranslator-Windows.zip")
     else:
-        print(f"    tar -czf OfflineTranslator-*.tar.gz -C {DIST_DIR} {APP_NAME}")
+        print(f"    tar -czf OfflineTranslator-*.tar.gz -C {DIST_DIR} {binary_name}")
 
 
 def main() -> None:
     if not (ROOT / ENTRY).exists():
         fail(f"entry point {ENTRY} not found in project root: {ROOT}")
     print("========================================")
-    print("Build OfflineTranslator (PyInstaller onedir)")
+    print("Build OfflineTranslator (PyInstaller onefile)")
     print("========================================")
     clean()
     optional = check_dependencies()

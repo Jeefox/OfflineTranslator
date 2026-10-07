@@ -113,12 +113,9 @@ def normalize_hotkey(hotkey: str) -> str | None:
     if not has_main or len(normalized) != len(set(normalized)):
         return None
     result = "+".join(normalized)
-    # Перепроверка парсером самого pynput — он и есть источник правды.
-    if HotKey is not None:
-        try:
-            HotKey.parse(result)
-        except ValueError:
-            return None
+    # Валидируем комбинацию собственными правилами выше. Некоторые версии
+    # pynput.HotKey.parse() не распознают функциональные клавиши (например
+    # f12), хотя pynput Listener их поддерживает.
     return result
 
 

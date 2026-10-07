@@ -2,7 +2,7 @@ customtkinter>=5.2.0
 transformers>=4.36.0
 # Фиксируем стабильную CPU-версию: более новые сборки заметно тяжелее и
 # раздувают автономные release-бандли сверх лимита GitHub в 2 GiB.
-torch==2.3.1
+torch==2.6.0
 sentencepiece>=0.1.99
 sacremoses>=0.1.1
 # Глобальный хоткей.

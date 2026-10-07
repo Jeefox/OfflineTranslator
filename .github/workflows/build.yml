@@ -38,7 +38,7 @@ jobs:
       - name: Download bundled Marian models
         run: python -m scripts.download_release_models
 
-      - name: Build (PyInstaller onedir)
+      - name: Build (PyInstaller onefile)
         run: python build.py
 
       - name: Archive
@@ -80,11 +80,11 @@ jobs:
       - name: Download bundled Marian models
         run: python -m scripts.download_release_models
 
-      - name: Build (PyInstaller onedir)
+      - name: Build (PyInstaller onefile)
         run: python build.py
 
       - name: Archive
-        run: Compress-Archive -Path dist/OfflineTranslator -DestinationPath OfflineTranslator-Windows.zip
+        run: Compress-Archive -Path dist/OfflineTranslator.exe -DestinationPath OfflineTranslator-Windows.zip
 
       - name: Split archive below GitHub asset limit
         run: python -m scripts.split_release_archive OfflineTranslator-Windows.zip
@@ -121,7 +121,7 @@ jobs:
       - name: Download bundled Marian models
         run: python -m scripts.download_release_models
 
-      - name: Build (PyInstaller onedir)
+      - name: Build (PyInstaller onefile)
         run: python build.py
 
       - name: Archive

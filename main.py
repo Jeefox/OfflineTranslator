@@ -5,6 +5,7 @@ import customtkinter as ctk
 import logging
 import platform
 import re
+import socket
 import tkinter as tk
 from tkinter import messagebox
 from translator import OfflineTranslator
@@ -87,7 +88,66 @@ ERROR_COLOR = "#f38ba8"     # статус: ошибки
 PENDING_COLOR = "#fab387"   # статус: инициализация / идёт перевод
 
 # Стандартный текст «готового» статуса.
-READY_TEXT = "Готов к переводу! (Работает офлайн)"
+READY_TEXT = "Готов к переводу! (локальная модель)"
+
+
+class _SingleInstance:
+    """Small cross-platform guard preventing accidental duplicate launches."""
+
+    def __init__(self, name="offline-translator"):
+        self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        # A fixed localhost port is deliberately used instead of a lock file:
+        # it is cleaned up by the OS even after a crash or forced termination.
+        port = 47000 + (sum(ord(ch) for ch in name) % 1000)
+        try:
+            self._socket.bind(("127.0.0.1", port))
+            self._socket.listen(1)
+        except OSError:
+            self._socket.close()
+            self._socket = None
+
+    @property
+    def acquired(self):
+        return self._socket is not None
+
+    def close(self):
+        if self._socket is not None:
+            self._socket.close()
+            self._socket = None
+
+
+class _Tooltip:
+    """Dependency-free tooltip for controls whose meaning is not obvious."""
+
+    def __init__(self, widget, text):
+        self.widget = widget
+        self.text = text
+        self.window = None
+        widget.bind("<Enter>", self._show, add="+")
+        widget.bind("<Leave>", self._hide, add="+")
+
+    def _show(self, _event=None):
+        if self.window is not None:
+            return
+        try:
+            x = self.widget.winfo_rootx() + 12
+            y = self.widget.winfo_rooty() + self.widget.winfo_height() + 5
+            self.window = tk.Toplevel(self.widget)
+            self.window.wm_overrideredirect(True)
+            self.window.wm_geometry("+%d+%d" % (x, y))
+            tk.Label(self.window, text=self.text, justify="left", wraplength=360,
+                     bg="#11111b", fg="#f5f5f5", padx=8, pady=5).pack()
+        except tk.TclError:
+            self.window = None
+
+    def _hide(self, _event=None):
+        if self.window is not None:
+            try:
+                self.window.destroy()
+            except tk.TclError:
+                pass
+            self.window = None
 
 # Цветовые темы (Catppuccin). "dark" — текущая палитра по умолчанию (Mocha),
 # "light" — та же палитра в светлой гамме (Latte). Тема выбирается в «Настройках»
@@ -126,6 +186,16 @@ class TranslatorApp(ctk.CTk):
     def __init__(self):
         super().__init__()
 
+        self._single_instance = _SingleInstance()
+        if not self._single_instance.acquired:
+            messagebox.showwarning(
+                "OfflineTranslator уже запущен",
+                "Приложение уже работает. Используйте его открытое окно "
+                "или значок в системном трее.",
+            )
+            self.destroy()
+            raise SystemExit(0)
+
         self.title("Офлайн Переводчик (Английский ↔ Русский)")
         self.geometry("900x600")
         self.resizable(True, True)
@@ -150,12 +220,13 @@ class TranslatorApp(ctk.CTk):
         # Сохранённый
         # model_id (settings.json) разрешается против направления:
         # неизвестная/несовместимая модель — дефолт направления (исправленное
-        # значение сохраняется). Marian допускается без пользовательского
+        # значение сохраняется). Модель допускается без пользовательского
         # кэша: его загрузит backend из бандля или сети.
         self.model_manager = ModelManager()
         self._active_model_id, persist_id, self._model_note = \
             self.model_manager.resolve_runtime(
                 self.settings.get("model_id"), self.direction)
+        self._model_note = self._user_model_note(self._model_note)
         self.model_id = persist_id if persist_id is not None \
             else self.settings.get("model_id")
         if persist_id is not None:
@@ -180,6 +251,11 @@ class TranslatorApp(ctk.CTk):
         # «идёт загрузка» (в отличие от мимолётного translator = None,
         # который фоновый поток может уже успеть заменить).
         self._model_loading = False
+        # Models can pass the cheap filesystem availability check and still
+        # fail during import/load. Keep that runtime result visible in the
+        # settings dialog instead of continuing to show a misleading green
+        # "available" label.
+        self._runtime_unavailable = set()
 
         # Состояние автоперевода / single-flight:
         # _translation_busy — сейчас идёт перевод;
@@ -235,6 +311,7 @@ class TranslatorApp(ctk.CTk):
         self._auto_follow = True
         # Текущий статус (вид, текст) — переотрисовывается при смене темы.
         self._status = ("busy", "Инициализация нейросети...")
+        self._clear_status_after = None
         # Окно настроек и агент глобального хоткея.
         self._settings_dialog = None
         self._hotkey_agent = None
@@ -325,7 +402,7 @@ class TranslatorApp(ctk.CTk):
 
         header_right = ctk.CTkFrame(main_frame, fg_color="transparent")
         header_right.grid(row=0, column=1, padx=10, pady=(6, 0), sticky="e")
-        self.settings_btn = ctk.CTkButton(header_right, text="Настройки",
+        self.settings_btn = ctk.CTkButton(header_right, text="⚙ Настройки",
                                           command=self._open_settings,
                                           width=110, height=30, font=("Arial", 13),
                                           corner_radius=8,
@@ -333,10 +410,14 @@ class TranslatorApp(ctk.CTk):
                                           hover_color=self._pal["panel_hover"],
                                           text_color=self._pal["text"])
         self.settings_btn.pack(side="left", padx=(0, 10))
-        self.header_subtitle = ctk.CTkLabel(header_right, text="Английский ↔ Русский · работает офлайн",
+        _Tooltip(self.settings_btn, "Открыть параметры приложения")
+        self.header_subtitle = ctk.CTkLabel(header_right, text="Английский ↔ Русский · локальная модель",
                                             font=("Arial", 12),
                                             text_color=self._pal["muted"])
         self.header_subtitle.pack(side="left")
+        _Tooltip(self.header_subtitle,
+                 "Перевод выполняется локально: текст не отправляется в интернет.\n"
+                 "Название активной модели отображается рядом.")
 
         # Responsive-сетка: колонки 0/1 и строка 2 (текстовые поля) имеют
         # weight=1 — занимают всё свободное пространство и растягиваются
@@ -422,7 +503,7 @@ class TranslatorApp(ctk.CTk):
         )
         self.direction_menu.pack(side="left", padx=(0, 8), pady=8)
 
-        self.swap_btn = ctk.CTkButton(self.direction_frame, text="Сменить местами",
+        self.swap_btn = ctk.CTkButton(self.direction_frame, text="⇄ Сменить местами",
                                  command=self.swap_fields, width=140, height=34,
                                  font=("Arial", 13), corner_radius=8,
                                  fg_color=self._pal["panel_hover"], hover_color=self._pal["scrollbar_hover"],
@@ -435,7 +516,7 @@ class TranslatorApp(ctk.CTk):
         btn_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
         btn_frame.grid(row=4, column=0, columnspan=2, pady=(10, 10), sticky="ew")
 
-        self.translate_btn = ctk.CTkButton(btn_frame, text="Перевести",
+        self.translate_btn = ctk.CTkButton(btn_frame, text="▶ Перевести",
                                            command=self.start_translation,
                                            state="disabled",
                                            width=160, height=40,
@@ -445,7 +526,7 @@ class TranslatorApp(ctk.CTk):
                                            text_color=self._pal["accent_text"])
         self.translate_btn.pack(side="right")
 
-        self.copy_btn = ctk.CTkButton(btn_frame, text="Копировать перевод",
+        self.copy_btn = ctk.CTkButton(btn_frame, text="⧉ Копировать перевод",
                                  command=self.copy_translation,
                                  width=160, height=40, font=("Arial", 14),
                                  corner_radius=10,
@@ -453,13 +534,15 @@ class TranslatorApp(ctk.CTk):
                                  text_color=self._pal["text"])
         self.copy_btn.pack(side="right", padx=10)
 
-        self.clear_btn = ctk.CTkButton(btn_frame, text="Очистить",
+        self.clear_btn = ctk.CTkButton(btn_frame, text="× Очистить",
                                   command=self.clear_fields,
                                   width=110, height=40, font=("Arial", 14),
                                   corner_radius=10,
                                   fg_color=self._pal["panel"], hover_color=self._pal["panel_hover"],
                                   text_color=self._pal["muted"])
         self.clear_btn.pack(side="right", padx=10)
+        _Tooltip(self.clear_btn,
+                 "Удаляет исходный текст, перевод и отменяет ожидающий автоперевод.")
 
         # Строка статуса (строка 5, внизу, weight=0): растягивается только
         # по ширине. Создаётся здесь (master=main_frame) — виджет Tkinter
@@ -578,7 +661,13 @@ class TranslatorApp(ctk.CTk):
             # исключение — в лог, в статус не попадает), кнопка остаётся
             # отключённой — включается только в init_done (Этап 14).
             self._model_loading = False
+            self._runtime_unavailable.add(self._active_model_id)
             logger.error("Ошибка загрузки модели: %s", message[1])
+            if self._settings_dialog is not None:
+                try:
+                    self._settings_dialog._refresh_model_menu()
+                except tk.TclError:
+                    pass
             self._set_status(
                 "error",
                 "Не удалось загрузить модель. Проверьте настройки модели "
@@ -706,7 +795,10 @@ class TranslatorApp(ctk.CTk):
         self._reset_sentence_mapping()
         # Запущенный перевод (если есть) больше не соответствует состоянию UI — помечаем его устаревшим.
         self._translation_generation += 1
-        self._set_status("ready")
+        self._set_status("ready", "Очищено. Готов к переводу.")
+        self._clear_status_after = self.after(
+            2500, lambda: self._set_status("ready")
+            if self._status[1] == "Очищено. Готов к переводу." else None)
 
     def change_direction(self, value: str):
         """Сменяет направление перевода (меню) и обновляет подписи полей.
@@ -765,6 +857,12 @@ class TranslatorApp(ctk.CTk):
         kind: "ready" (зелёный), "busy" (оранжевый), "error" (красный).
         Текст сохраняется (self._status) и переотрисовывается при смене темы.
         """
+        if self._clear_status_after is not None:
+            try:
+                self.after_cancel(self._clear_status_after)
+            except (tk.TclError, ValueError):
+                pass
+            self._clear_status_after = None
         if text is None:
             text = READY_TEXT
         color = {"ready": self._pal["success"],
@@ -776,17 +874,32 @@ class TranslatorApp(ctk.CTk):
     # ------------------------------------------------------------------ #
     #  Модель: отображение и применение (Этап 10)                        #
     # ------------------------------------------------------------------ #
+    def _model_user_name(self, model_id: str) -> str:
+        """Короткое пользовательское имя модели без технических деталей."""
+        descriptor = self.model_manager.get_model(model_id)
+        name = descriptor.name.split(" (")[0]
+        return (name.replace("Английский → Русский", "EN → RU")
+                    .replace("Русский → Английский", "RU → EN"))
+
     def _model_short_name(self) -> str:
-        """Короткое отображаемое имя текущей (запущенной) модели:
-        display name без происхождения в скобках."""
-        descriptor = self.model_manager.get_model(self._active_model_id)
-        return descriptor.name.split(" (")[0]
+        """Короткое отображаемое имя текущей (запущенной) модели."""
+        return self._model_user_name(self._active_model_id)
+
+    def _user_model_note(self, note: str) -> str:
+        """Заменяет технические имена моделей в пользовательской заметке."""
+        if not note:
+            return note
+        for descriptor in self.model_manager.list_models():
+            note = note.replace(
+                descriptor.name,
+                self._model_user_name(descriptor.id))
+        return note
 
     def _ready_status_text(self) -> str:
         """Статус «готово» с именем модели (Этап 10): пользователь видит,
         какой моделью работает приложение. note (фолбэк/смена) — впереди."""
         try:
-            text = "Готов к переводу! (Работает офлайн, модель: %s)" % \
+            text = "Готов к переводу! (локальная модель: %s)" % \
                 self._model_short_name()
         except ModelNotFoundError:
             text = READY_TEXT
@@ -803,7 +916,7 @@ class TranslatorApp(ctk.CTk):
         except ModelNotFoundError:
             model = "—"
         self.header_subtitle.configure(
-            text="%s · %s · работает офлайн" % (dir_label, model))
+            text="%s · %s · локальная модель" % (dir_label, model))
 
     def _set_direction(self, direction: str):
         """Программная смена направления (агент хоткея, настройки, меню).
@@ -839,7 +952,7 @@ class TranslatorApp(ctk.CTk):
                        "Русский → Английский" if direction == "ru-en" else "Английский → Русский",
                        new_name))
         self._active_model_id = run_id
-        self._model_note = note
+        self._model_note = self._user_model_note(note)
         self._update_model_display()
         if run_id != self._translator_model_id:
             self._start_model_load()
@@ -867,7 +980,7 @@ class TranslatorApp(ctk.CTk):
         self.settings.set("model_id", self.model_id)
         self.settings.save()
         self._active_model_id = run_id
-        self._model_note = note
+        self._model_note = self._user_model_note(note)
         self._update_model_display()
         if run_id != self._translator_model_id:
             self._start_model_load()
@@ -1233,12 +1346,12 @@ class TranslatorApp(ctk.CTk):
         self.direction = direction
         if direction == "ru-en":
             self.direction_var.set("Русский → Английский")
-            self.input_label.configure(text="Исходный текст (Русский)")
-            self.output_label.configure(text="Перевод (Английский)")
+            self.input_label.configure(text="Исходный текст (RU)")
+            self.output_label.configure(text="Перевод (EN)")
         else:
             self.direction_var.set("Английский → Русский")
-            self.input_label.configure(text="Исходный текст (Английский)")
-            self.output_label.configure(text="Перевод (Русский)")
+            self.input_label.configure(text="Исходный текст (EN)")
+            self.output_label.configure(text="Перевод (RU)")
 
     def _set_theme(self, theme: str):
         """Применяет цветовую тему к основному окну (без перезапуска)."""
@@ -1704,6 +1817,8 @@ class TranslatorApp(ctk.CTk):
     def _quit_app(self):
         self._stop_hotkey_agent()
         self._tray.stop()
+        if getattr(self, "_single_instance", None) is not None:
+            self._single_instance.close()
         self.destroy()
 
 
@@ -1814,16 +1929,26 @@ class SettingsDialog(ctk.CTkToplevel):
                                       command=self._on_save)
         self.save_btn.pack(side="left", padx=(10, 0))
 
-        # Прокручиваемая область настроек: при росте окна занимает всё
-        # свободное место, при избытке содержимого — вертикальный scrollbar
-        # (только этой области, нижняя панель не прокручивается).
+        # Навигация слева остаётся видимой, а длинный список настроек
+        # прокручивается справа. Это сохраняет текущие имена виджетов и
+        # делает окно заметно удобнее на небольших экранах.
+        body = ctk.CTkFrame(self, fg_color="transparent")
+        body.pack(side="top", fill="both", expand=True, padx=18, pady=(14, 0))
+        body.grid_columnconfigure(1, weight=1)
+        body.grid_rowconfigure(0, weight=1)
+        sidebar = ctk.CTkFrame(body, fg_color=pal["panel"], corner_radius=10,
+                               width=125)
+        sidebar.grid(row=0, column=0, sticky="nsw", padx=(0, 12))
+        sidebar.grid_propagate(False)
+        ctk.CTkLabel(sidebar, text="Разделы", font=("Arial", 13, "bold"),
+                     text_color=pal["text"]).pack(padx=10, pady=(14, 8))
+
         self._scroll_frame = ctk.CTkScrollableFrame(
-            self, fg_color="transparent",
+            body, fg_color="transparent",
             scrollbar_fg_color=pal["field"],
             scrollbar_button_color=pal["scrollbar"],
             scrollbar_button_hover_color=pal["scrollbar_hover"])
-        self._scroll_frame.pack(side="top", fill="both", expand=True,
-                                padx=18, pady=(14, 0))
+        self._scroll_frame.grid(row=0, column=1, sticky="nsew")
         # Сетка «label + control»: колонка подписей — фиксированный
         # минимальный width (выравнивает все контролы), колонка контролов —
         # weight=1: поля ввода и меню растягиваются по ширине окна.
@@ -1834,10 +1959,12 @@ class SettingsDialog(ctk.CTkToplevel):
 
         def row_label(text):
             nonlocal row
-            ctk.CTkLabel(self._scroll_frame, text=text,
-                         font=("Arial", 13, "bold"), text_color=pal["text"],
-                         anchor="w", wraplength=170).grid(
+            label = ctk.CTkLabel(self._scroll_frame, text=text,
+                                font=("Arial", 13, "bold"), text_color=pal["text"],
+                                anchor="w", wraplength=170)
+            label.grid(
                 row=row, column=0, sticky="w", padx=(0, 12), pady=(12, 2))
+            _Tooltip(label, text)
 
         def make_entry(value):
             nonlocal row
@@ -1854,6 +1981,38 @@ class SettingsDialog(ctk.CTkToplevel):
             self._make_resizable(e, min_width=140)
             row += 1
             return e
+
+        def make_spinbox(value, minimum, maximum, step, nested=False):
+            """Numeric entry with Up/Down spinbox keyboard controls."""
+            nonlocal row
+            parent = self._scroll_frame
+            if nested:
+                parent = ctk.CTkFrame(self._scroll_frame, fg_color="transparent")
+                parent.grid(row=row, column=1, sticky="ew", pady=(0, 2))
+                parent.grid_columnconfigure(0, weight=1)
+            entry = ctk.CTkEntry(parent, width=200, height=32,
+                                 corner_radius=8, font=("Arial", 13),
+                                 fg_color=pal["field"],
+                                 border_color=pal["panel_hover"],
+                                 text_color=pal["text"])
+            entry.insert(0, value)
+            entry.grid(row=0 if nested else row, column=0 if nested else 1,
+                       sticky="ew", pady=(0, 2) if not nested else 0)
+            entry._entry.bind("<KeyPress>", self.app._on_physical_hotkey, add="+")
+            self._make_resizable(entry, min_width=140)
+            def change(delta):
+                try:
+                    current = float(entry.get().replace(",", "."))
+                except ValueError:
+                    current = minimum
+                current = max(minimum, min(maximum, current + delta))
+                text = str(int(current)) if float(current).is_integer() else f"{current:g}"
+                entry.delete(0, "end")
+                entry.insert(0, text)
+            entry._entry.bind("<Up>", lambda _event: (change(step), "break")[1], add="+")
+            entry._entry.bind("<Down>", lambda _event: (change(-step), "break")[1], add="+")
+            row += 1
+            return entry
 
         def make_option(values, current, command=None):
             nonlocal row
@@ -1934,23 +2093,32 @@ class SettingsDialog(ctk.CTkToplevel):
         self._model_label_to_id = {}
         self._refresh_model_menu()
 
+        sections = (("Основные", 0), ("Перевод", 7), ("Хоткей", 15))
+        def jump(fraction):
+            self._scroll_frame._parent_canvas.yview_moveto(fraction)
+        for title, fraction in sections:
+            ctk.CTkButton(sidebar, text=title, height=30, anchor="w",
+                          fg_color="transparent", hover_color=pal["panel_hover"],
+                          text_color=pal["text"], command=lambda f=fraction: jump(f)
+                          ).pack(fill="x", padx=6, pady=2)
+
         # Автоперевод и тайминги
         row_label("Автоперевод")
         self.autotranslate_var = make_switch(
             "после остановки набора текста", s.get("autotranslate"))
 
         row_label("Задержка автоперевода, сек")
-        self.debounce_entry = make_entry(str(s.get("debounce_sec")))
+        self.debounce_entry = make_spinbox(str(s.get("debounce_sec")), 0, 60, 0.5)
 
         row_label("Задержка статуса, сек")
-        self.slow_entry = make_entry(str(s.get("slow_after_sec")))
+        self.slow_entry = make_spinbox(str(s.get("slow_after_sec")), 0, 60, 0.5)
 
         row_label("Уведомление, сек")
-        self.notification_duration_entry = make_entry(
-            str(s.get("notification_duration_sec")))
+        self.notification_duration_entry = make_spinbox(
+            str(s.get("notification_duration_sec")), 0, 60, 1, nested=True)
 
         row_label("Макс. длина, символов")
-        self.max_len_entry = make_entry(str(s.get("max_text_length")))
+        self.max_len_entry = make_spinbox(str(s.get("max_text_length")), 0, 1000000, 100)
 
         # Глобальный хоткей
         row_label("Автоопределение направления")
@@ -2096,11 +2264,13 @@ class SettingsDialog(ctk.CTkToplevel):
         заменено дефолтом при сохранении.
         """
         manager = self.app.model_manager
-        dir_label = "Русский → Английский" if direction == "ru-en" else "Английский → Русский"
+        dir_label = "RU → EN" if direction == "ru-en" else "EN → RU"
         labels = []
         for desc in manager.list_models():
             if not desc.supports_direction(direction):
                 label = f"{desc.name} — не подходит для {dir_label}"
+            elif desc.id in self.app._runtime_unavailable:
+                label = f"{desc.name} — ошибка загрузки"
             else:
                 status = ("доступна" if manager.is_model_available(desc.id)
                           else "недоступна локально")
@@ -2153,6 +2323,11 @@ class SettingsDialog(ctk.CTkToplevel):
                       f"использована модель по умолчанию: "
                       f"{default.name if default is not None else '—'}"),
                 text_color=pal["pending"])
+        elif model_id in self.app._runtime_unavailable:
+            self.model_note_label.configure(
+                text="Последняя загрузка завершилась ошибкой. Проверьте "
+                     "файлы модели и перезапустите загрузку.",
+                text_color=pal["error"])
         elif manager.is_model_available(model_id):
             self.model_note_label.configure(text="Доступна",
                                             text_color=pal["success"])
