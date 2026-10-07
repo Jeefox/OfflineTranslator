@@ -3,14 +3,12 @@ transformers>=4.36.0
 torch>=2.1.0
 sentencepiece>=0.1.99
 sacremoses>=0.1.1
-# Этап 6 (GGUF-POC): локальный runtime llama.cpp для LlamaCppBackend (CPU).
-# Опциональная RUNTIME-зависимость: Marian-путь, приложение и реестр
-# моделей (model_registry) работают без неё — llama_cpp импортируется
-# лениво в load() бэкенда, а model_registry не импортирует его вовсе.
-# Оставлена в requirements.txt, чтобы полная установка (Marian + GGUF)
-# была одной командой; для установки только Marian строку можно удалить.
-llama-cpp-python>=0.3.0
+# Глобальный хоткей.
+pynput>=1.7.6
 # Системный трей и уведомления.
 pystray>=0.19.5
 Pillow>=10.0
 plyer>=2.1.0
+
+# GGUF-бэкенд (Hy-MT2) остаётся дополнительным и не нужен для релизной
+# сборки Marian. Установка: pip install -r requirements-gguf.txt
