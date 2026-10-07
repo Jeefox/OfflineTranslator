@@ -1,64 +1,34 @@
 @echo off
+setlocal
 echo ========================================
-echo Сборка OfflineTranslator в EXE файл
+echo Сборка OfflineTranslator для Windows
 echo ========================================
 echo.
 
-echo Устанавливаем PyInstaller...
-pip install pyinstaller
+echo Устанавливаем зависимости сборки...
+python -m pip install --upgrade pip
+if errorlevel 1 exit /b 1
+python -m pip install -r requirements.txt pyinstaller
+if errorlevel 1 exit /b 1
 echo.
 
-echo Очищаем старые сборки...
-if exist build rmdir /s /q build
-if exist dist rmdir /s /q dist
-if exist *.spec del /q *.spec
+echo Загружаем Marian-модели для офлайн-запуска...
+python -m scripts.download_release_models
+if errorlevel 1 exit /b 1
 echo.
 
-echo Проверяем кэш моделей...
-set BUNDLE_FLAGS=
-if exist "cache\*" (
-    echo Найдена папка cache\ — модели будут встроены в EXE.
-    set BUNDLE_FLAGS=--add-data "cache;cache"
-) else (
-    if exist "%LOCALAPPDATA%\OfflineTranslator\cache\*" (
-        echo Найдан кэш моделей в %%LOCALAPPDATA%%\OfflineTranslator\cache.
-        echo Копируем модели в проект (для встраивания в EXE)...
-        xcopy /E /I /Y "%LOCALAPPDATA%\OfflineTranslator\cache" "cache" >nul
-        set BUNDLE_FLAGS=--add-data "cache;cache"
-    ) else (
-        echo ОШИБКА: кэш Marian-моделей не найден.
-        echo Для офлайн-первого запуска сначала скачайте обе модели,
-        echo запустив приложение один раз с интернетом, затем повторите сборку.
-        exit /b 1
-    )
-)
-echo.
+echo Собираем приложение...
+python build.py
+if errorlevel 1 exit /b 1
 
-echo Начинаем сборку...
-echo (Это займет 2-5 минут)
-pyinstaller --onefile ^
-    --windowed ^
-    --name "OfflineTranslator" ^
-    --add-data "dictionary.json;." ^
-    %BUNDLE_FLAGS% ^
-    --hidden-import torch ^
-    --hidden-import transformers ^
-    --hidden-import customtkinter ^
-    main.py
+echo.
+echo Архивируем бандль...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Compress-Archive -Path 'dist\OfflineTranslator' -DestinationPath 'OfflineTranslator-Windows.zip' -Force"
+if errorlevel 1 exit /b 1
 
 echo.
 echo ========================================
-if exist dist\OfflineTranslator.exe (
-    echo ✓ СБОРКА УСПЕШНА!
-    echo.
-    echo EXE файл находится в папке: %CD%\dist\
-    echo Размер файла: 
-    dir dist\OfflineTranslator.exe | find "OfflineTranslator.exe"
-    echo.
-    echo Можешь скопировать OfflineTranslator.exe куда угодно!
-) else (
-    echo ✗ ОШИБКА СБОРКИ
-    echo Проверь консоль выше
-)
+echo СБОРКА УСПЕШНА!
+echo Архив: %CD%\OfflineTranslator-Windows.zip
 echo ========================================
-pause
+endlocal
