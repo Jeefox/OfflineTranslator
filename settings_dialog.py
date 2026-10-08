@@ -523,7 +523,11 @@ class SettingsDialog(ctk.CTkToplevel):
         for desc in manager.list_models():
             if not desc.supports_direction(direction):
                 label = f"{desc.name} — не подходит для {dir_label}"
-            elif desc.id in self.app._runtime_unavailable:
+            elif self.app._runtime_model_state(desc.id)[0]:
+                suffix = ("работает; новая конфигурация не загрузилась"
+                          if self.app._runtime_model_state(desc.id)[1] else "готова")
+                label = f"{desc.name} — доступна ({suffix})"
+            elif self.app._runtime_model_state(desc.id)[1]:
                 label = f"{desc.name} — ошибка загрузки"
             else:
                 status = ("доступна" if manager.is_model_available(desc.id)
@@ -537,9 +541,15 @@ class SettingsDialog(ctk.CTkToplevel):
         текущий выбор, если он остался в списке; иначе — модель по
         умолчанию для направления (первая подходящая в реестре)."""
         direction = self._model_direction()
+        current = self.model_var.get()
+        current_id = getattr(self, "_model_label_to_id", {}).get(current)
+        if (getattr(self, "_model_menu_direction", None) != direction and current_id
+                and not self.app.model_manager.get_model(current_id).supports_direction(direction)):
+            current_id, current = None, ""
+        self._model_menu_direction = direction
         labels = self._model_labels(direction)
         self._model_label_to_id = dict(labels)
-        current = self.model_var.get()
+        current = next((label for label, mid in labels if mid == current_id), current)
         selected = current if current in self._model_label_to_id else ""
         if not selected:
             default = self.app.model_manager.get_default_model(direction)
@@ -577,7 +587,13 @@ class SettingsDialog(ctk.CTkToplevel):
                       f"использована модель по умолчанию: "
                       f"{default.name if default is not None else '—'}"),
                 text_color=pal["pending"])
-        elif model_id in self.app._runtime_unavailable:
+        elif self.app._runtime_model_state(model_id)[0]:
+            failed = self.app._runtime_model_state(model_id)[1]
+            self.model_note_label.configure(
+                text=("Текущая модель работает. Новая конфигурация не загрузилась."
+                      if failed else "Модель загружена и готова к переводу."),
+                text_color=pal["pending"] if failed else pal["success"])
+        elif self.app._runtime_model_state(model_id)[1]:
             self.model_note_label.configure(
                 text="Последняя загрузка завершилась ошибкой. Проверьте "
                      "файлы модели и перезапустите загрузку.",
@@ -737,9 +753,14 @@ class SettingsDialog(ctk.CTkToplevel):
         paths_changed = any(self.app.settings.get(key) != normalized[key]
                             for key in self.model_path_entries)
         load_seq = self.app._load_seq
+        previous_settings = self.app.settings.as_dict()
         for key, norm in normalized.items():
             self.app.settings.set(key, norm)
-        self.app.settings.save()
+        if not self.app.settings.save():
+            for key, value in previous_settings.items():
+                self.app.settings.set(key, value)
+            self._show_error("Не удалось сохранить настройки. Проверьте доступ к файлу настроек.")
+            return
         configure_paths(normalized["marian_en_ru_path"], normalized["marian_ru_en_path"],
                         normalized["gguf_path"])
 

@@ -93,11 +93,7 @@ class StubBackend:
         pass
 
     def split_sentence(self, sentence, direction):
-        words = sentence.split()
-        if not words:
-            return [sentence]
-        return [" ".join(words[i:i + self.chunk_words])
-                for i in range(0, len(words), self.chunk_words)]
+        return split_sentence_to_chunks(sentence, lambda text: len(text.split()), self.chunk_words)
 
     def translate_chunk(self, chunk, direction):
         GEN_CALLS.append((direction, chunk))
@@ -350,7 +346,7 @@ r = b.translate_chunk("hello world", "en-ru")
 check("marian_infer_echo", r == "⟪hello world⟫", r)
 check("marian_infer_model_en", GEN and GEN[0][0] == EN, str(GEN))
 check("marian_infer_kwargs",
-      GEN[0][1].get("max_length") == 512 and GEN[0][1].get("num_beams") == 4,
+      GEN[0][1].get("max_new_tokens") == 511 and "max_length" not in GEN[0][1] and GEN[0][1].get("num_beams") == 4,
       str(GEN[0][1]))
 check("marian_encode_consumed", len(ENQ) == 0, str(ENQ))
 GEN.clear()

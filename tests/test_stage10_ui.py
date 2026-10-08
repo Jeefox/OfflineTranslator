@@ -328,7 +328,8 @@ for label, mid in labels:
               "не подходит для" in label and "доступна" not in label,
               label)
         continue
-    avail = app.model_manager.is_model_available(mid)
+    ready, failed = app._runtime_model_state(mid)
+    avail = ready or app.model_manager.is_model_available(mid)
     mark = "доступна" if avail else "недоступна локально"
     check("dlg: label %s показывает доступность" % mid, mark in label,
           label)

@@ -1,0 +1,9 @@
+name: Linux GUI prerequisites
+description: Install and verify the Tcl/Tk environment shared by tests and builds
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: sudo apt-get update && sudo apt-get install -y xvfb python3-tk
+    - shell: bash
+      run: xvfb-run -a python -c "import tkinter; root = tkinter.Tk(); root.destroy()"

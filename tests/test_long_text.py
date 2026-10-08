@@ -12,7 +12,7 @@
 - max_length токенизатора == OfflineTranslator.max_source_tokens:
   куски не длиннее лимита, truncation=True оставлен страховкой и
   ни один путь chunking не приводит к скрытому truncation;
-- generate(max_length=512) не изменён (это отдельный выходной лимит);
+- generate использует отдельный max_new_tokens с учётом лимита декодера;
 - короткие тексты → один inference;
 - оба направления; словарь срабатывает раньше нейросети.
 """
@@ -158,7 +158,8 @@ def assert_full(result, original, model_name):
         check("no_hidden_truncation", n_tok <= ml,
               "count=%d max_length=%r" % (n_tok, ml))
     for kw in GEN:
-        check("gen_max_length_512", kw.get("max_length") == 512, str(kw.get("max_length")))
+        check("gen_output_budget", kw.get("max_new_tokens") == 511
+              and "max_length" not in kw, str(kw))
 
 EN = "Helsinki-NLP/opus-mt-en-ru"
 RU = "Helsinki-NLP/opus-mt-ru-en"
@@ -238,7 +239,8 @@ reset()
 r = t.translate("See %s for details." % url, "en-ru")
 check("url_preserved", url in r, r[:100])
 check("url_not_sent_to_inference", all(url not in c[1] for c in CALLS))
-check("url_surrounding_text_translated", len(CALLS) == 2, str(CALLS))
+check("url_sentence_context_preserved", len(CALLS) == 1
+      and CALLS[0][1].startswith("See ") and CALLS[0][1].endswith(" for details."), str(CALLS))
 
 # 11. Текст ровно в лимите (480 токенов) -> один chunk
 exact = " ".join("w%d" % i for i in range(478))  # 2 спец + 478 слов = 480

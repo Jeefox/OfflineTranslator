@@ -15,6 +15,8 @@ from local_models import configure_paths, local_path, has_transformers_model, us
 from app_icons import action_icon, asset_path
 from PIL import Image, ImageTk
 from translator import OfflineTranslator
+from translation_service import CancellationToken, TranslationCancelled, TranslationService
+from translation_errors import to_user_message
 from settings import Settings, normalize_hotkey, validate_value
 from hotkey_agent import HotkeyAgent, PYNPUT_AVAILABLE
 from notifications import show_notification
@@ -132,7 +134,8 @@ class TranslatorApp(ctk.CTk):
         # fail during import/load. Keep that runtime result visible in the
         # settings dialog instead of continuing to show a misleading green
         # "available" label.
-        self._runtime_unavailable = set()
+        self._runtime_failures = {}
+        self._translator_request_identity = None
 
         # Состояние автоперевода / single-flight:
         # _translation_busy — сейчас идёт перевод;
@@ -172,7 +175,7 @@ class TranslatorApp(ctk.CTk):
         # сортированы по построению — юниты добавляются по порядку.
         self._src_starts = []
         self._dst_starts = []
-        # Кэш начал строк для hover (id(внутреннего Text) -> (len, offs)).
+        # Кэш начал строк для hover (id(внутреннего Text) -> (text, offs)).
         self._hover_cache = {}
         # Синхронная прокрутка полей (Этап 5; исправление Этапа 10):
         # _syncing_scroll — защита от рекурсии (пока код программно
@@ -220,6 +223,22 @@ class TranslatorApp(ctk.CTk):
         Тот же механизм, что и при старте: _start_model_load."""
         self._start_model_load()
 
+    def _model_request_identity(self, model_id, paths=None):
+        descriptor = self.model_manager.get_model(model_id)
+        keys = descriptor.directions if descriptor.backend == "marian" else ("gguf",)
+        if paths is None:
+            paths = {key: local_path(key) for key in keys}
+        return (model_id, tuple((key, os.path.normcase(os.path.realpath(
+            os.path.expanduser(paths[key]))) if paths.get(key) else None)
+            for key in sorted(keys)))
+
+    def _runtime_model_state(self, model_id):
+        """Ready runtime and failed attempted source are independent states."""
+        identity = self._model_request_identity(model_id)
+        ready = (self.translator is not None and not self._model_loading
+                 and self._translator_model_id == model_id)
+        return ready, identity in self._runtime_failures
+
     def _start_model_load(self):
         """(Пере)загружает переводчик в фоновом потоке (Этап 10).
 
@@ -242,10 +261,15 @@ class TranslatorApp(ctk.CTk):
         self.translate_btn.configure(state="disabled")
         self._set_status("busy", "Инициализация модели...")
         if not hasattr(self, "_model_loader"):
-            self._model_loader = ModelLoader()
+            self._model_loader = ModelLoader(failure_callback=self._model_loader_failed)
         self._model_loader.submit(self._init_translator_worker,
                                   self._load_seq, self._active_model_id,
                                   {key: local_path(key) for key in ("en-ru", "ru-en", "gguf")})
+
+    def _model_loader_failed(self, error, _function, args):
+        load_seq, model_id, paths = args
+        self._gui_queue.put(("init_error", str(error), load_seq,
+                             self._model_request_identity(model_id, paths)))
 
     def _init_translator_worker(self, load_seq: int, model_id=None, paths=None):
         """Фоновый поток: OfflineTranslator(model_id=...).
@@ -259,17 +283,21 @@ class TranslatorApp(ctk.CTk):
         if load_seq != self._load_seq:
             return
         model_id = model_id or self._active_model_id
+        if paths is None:
+            paths = {key: local_path(key) for key in ("en-ru", "ru-en", "gguf")}
+        identity = self._model_request_identity(model_id, paths)
         try:
             with using_paths(paths):
                 translator = OfflineTranslator(model_id=model_id)
         except Exception as e:
+            logger.exception("Ошибка инициализации модели")
             if load_seq == self._load_seq:
-                self._gui_queue.put(("init_error", str(e), load_seq))
+                self._gui_queue.put(("init_error", str(e), load_seq, identity))
             return
         if load_seq != self._load_seq:
             # Во время загрузки запустили новую — этот результат не нужен.
             return
-        self._gui_queue.put(("init_done", load_seq, translator, model_id))
+        self._gui_queue.put(("init_done", load_seq, translator, model_id, identity))
 
     def _set_window_icon(self, window):
         """Значок окна/панели задач; ICO также встроен в Windows executable."""
@@ -510,14 +538,21 @@ class TranslatorApp(ctk.CTk):
         текста пользователем), worker завершается как можно раньше и не
         публикует устаревшие результаты.
         """
-        stream = getattr(self.translator, "translate_stream", None)
+        translator = self.translator
+        token = CancellationToken(lambda: generation != self._translation_generation)
+        stream = getattr(translator, "translate_stream", None)
         if stream is None:
             # Фолбэк: у переводчика нет инкрементального интерфейса —
             # переводим весь текст целиком (старый путь, без стрима).
             try:
-                result = self.translator.translate(text, direction)
+                token.check()
+                result = translator.translate(text, direction)
+                token.check()
+            except TranslationCancelled:
+                self._gui_queue.put(("stream_stale", generation))
+                return
             except Exception as e:
-                self._gui_queue.put(("translation_error", generation, str(e)))
+                self._gui_queue.put(("translation_error", generation, e))
                 return
             self._gui_queue.put(("translation_done", generation, result))
             return
@@ -533,8 +568,13 @@ class TranslatorApp(ctk.CTk):
                 ("stream_sentence", generation, phase, done, total, unit))
 
         try:
-            result = stream(text, direction, on_sentence)
-        except _StaleTranslation:
+            token.check()
+            if isinstance(translator, TranslationService):
+                result = stream(text, direction, on_sentence, cancellation_token=token)
+            else:
+                result = stream(text, direction, on_sentence)
+            token.check()
+        except (_StaleTranslation, TranslationCancelled):
             # Поколение устарело: сообщаем главному потоку, чтобы он
             # сбросил состояние и запустил коалесированный запрос.
             self._gui_queue.put(("stream_stale", generation))
@@ -542,9 +582,18 @@ class TranslatorApp(ctk.CTk):
         except Exception as e:
             # Даже при неожиданной ошибке уведомляем главный поток:
             # он включит кнопку и покажет ошибку в статусе.
-            self._gui_queue.put(("translation_error", generation, str(e)))
+            self._gui_queue.put(("translation_error", generation, e))
             return
         self._gui_queue.put(("translation_done", generation, result))
+
+    def _send_translation_notification(self, result, generation):
+        try:
+            shown = show_notification("Перевод готов", result,
+                                      self.settings.get("notification_duration_sec", 5))
+        except Exception:
+            logger.exception("Ошибка отправки уведомления")
+            shown = False
+        self._gui_queue.put(("notification_done", generation, shown))
 
     def _process_gui_queue(self):
         """Опрос очереди в главном потоке: применяет сообщения фоновых потоков
@@ -565,9 +614,10 @@ class TranslatorApp(ctk.CTk):
                 if message[1] != self._load_seq:
                     return
                 self.translator, self._translator_model_id = message[2:4]
+                self._translator_request_identity = message[4]
             # Модели загружены: перевод доступен.
             self._model_loading = False
-            self._runtime_unavailable.discard(self._active_model_id)
+            self._runtime_failures.pop(self._translator_request_identity, None)
             self.translate_btn.configure(state="disabled" if self._translation_busy else "normal")
             if self._settings_dialog is not None:
                 self._settings_dialog._refresh_model_menu()
@@ -603,7 +653,8 @@ class TranslatorApp(ctk.CTk):
             # исключение — в лог, в статус не попадает), кнопка остаётся
             # отключённой — включается только в init_done (Этап 14).
             self._model_loading = False
-            self._runtime_unavailable.add(self._active_model_id)
+            identity = message[3] if len(message) > 3 else self._model_request_identity(self._active_model_id)
+            self._runtime_failures[identity] = message[1]
             logger.error("Ошибка загрузки модели: %s", message[1])
             if self.translator is not None:
                 self._model_note = None
@@ -679,15 +730,16 @@ class TranslatorApp(ctk.CTk):
             if (generation == self._translation_generation
                     and self._notification_after_translation):
                 self._notification_after_translation = False
-                shown = show_notification(
-                    "Перевод готов", result,
-                    self.settings.get("notification_duration_sec", 5))
-                if not shown:
-                    logger.warning("Не удалось показать уведомление")
-                    if self.state() == "withdrawn":
-                        self._show_from_tray()
+                threading.Thread(target=self._send_translation_notification,
+                                 args=(result, generation), daemon=True).start()
             # После завершения: коалесированный запрос (если текст не изменился).
             self._continue_pending_translation()
+        elif kind == "notification_done":
+            generation, shown = message[1:3]
+            if generation == self._translation_generation and not shown:
+                logger.warning("Не удалось показать уведомление")
+                if self.state() == "withdrawn":
+                    self._show_from_tray()
         elif kind == "translation_error":
             generation, error = message[1], message[2]
             if generation != self._translation_generation:
@@ -702,7 +754,11 @@ class TranslatorApp(ctk.CTk):
                 # предложения остаются в поле (они верны), ошибка — в статусе
                 # (traceback пользователю не показываем).
                 self._clear_highlight()
-                self._set_status("error", f"Ошибка перевода: {error}")
+                if isinstance(error, BaseException):
+                    logger.error("Ошибка перевода", exc_info=(type(error), error, error.__traceback__))
+                else:
+                    logger.error("Ошибка перевода: %s", error)
+                self._set_status("error", to_user_message(error))
             else:
                 # Операция устарела — просто восстанавливаем обычный статус.
                 self._set_status("ready")
@@ -1059,12 +1115,11 @@ class TranslatorApp(ctk.CTk):
     # -- hover-механика (Этап 10) --------------------------------------- #
     def _hover_cache_line_offsets(self, tb):
         """Начала строк текста поля с кэшем: пересчёт только при изменении
-        длины текста (для long text <Motion> не должен сканировать весь
-        текст на каждое движение мыши)."""
+        текста, включая замены той же длины с другими переносами строк)."""
         text = tb.get("1.0", "end-1c")
         cached = self._hover_cache.get(id(tb))
-        if cached is None or cached[0] != len(text):
-            cached = (len(text), line_offsets(text))
+        if cached is None or cached[0] != text:
+            cached = (text, line_offsets(text))
             self._hover_cache[id(tb)] = cached
         return cached[1]
 
@@ -1740,7 +1795,7 @@ class TranslatorApp(ctk.CTk):
         поле, при необходимости переопределяем направление и переводим."""
         limit = int(self.settings.get("max_text_length") or 0)
         if limit and len(text) > limit:
-            text = text[:limit].strip()
+            text = text[:limit]
         if not text:
             return
         # «Фильтр кириллицы» (настройка из старой версии): направление

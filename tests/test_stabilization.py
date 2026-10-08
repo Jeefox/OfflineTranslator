@@ -12,7 +12,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from model_loader import ModelLoader
 from sentence_pipeline import split_units, assemble_output
 from translation_cache import TranslationCache
-from translation_service import TranslationService, TranslationError, split_sentence_to_chunks
+from translation_service import (TranslationService, TranslationError, split_sentence_to_chunks,
+                                 CancellationToken, TranslationCancelled)
 from dictionary_manager import build_snapshot
 from single_instance import SingleInstanceGuard
 
@@ -59,6 +60,85 @@ class StabilizationTests(unittest.TestCase):
         finally:
             release.set()
             loader.close()
+
+    def test_loader_survives_callback_and_error_handler_failures(self):
+        failures, completed = threading.Event(), threading.Event()
+        errors = []
+        def failed(exc, function, args):
+            errors.append((str(exc), args))
+            failures.set()
+            raise RuntimeError("handler failed too")
+        loader = ModelLoader(failure_callback=failed)
+        def broken(value):
+            raise ValueError(value)
+        try:
+            with self.assertLogs("model_loader", level="ERROR") as logs:
+                self.assertTrue(loader.submit(broken, "load failed"))
+                self.assertTrue(failures.wait(3))
+                self.assertTrue(loader.submit(completed.set))
+                self.assertTrue(completed.wait(3))
+            self.assertTrue(loader.is_alive())
+            self.assertEqual(errors, [("load failed", ("load failed",))])
+            self.assertEqual(len(logs.records), 2)
+        finally:
+            loader.close()
+            loader._thread.join(3)
+        self.assertFalse(loader.is_alive())
+        self.assertFalse(loader.submit(completed.set))
+
+    def test_cancel_after_chunk_does_not_cache_or_publish_unit(self):
+        token = CancellationToken()
+        backend = Backend()
+        backend.split_sentence = lambda text, direction: ["long ", "sen", "tence"]
+        original = backend.translate_chunk
+        def chunk(text, direction):
+            result = original(text, direction)
+            token.cancel()
+            return result
+        backend.translate_chunk = chunk
+        service = TranslationService(backend, snapshot_loader=lambda _: None)
+        events = []
+        with self.assertRaises(TranslationCancelled):
+            service.translate_stream("long sentence", cancellation_token=token,
+                                     on_sentence=lambda *args: events.append(args))
+        self.assertEqual(backend.calls, ["long"])
+        self.assertEqual([event[0] for event in events], ["start"])
+        self.assertEqual(len(service.translation_cache), 0)
+        with self.assertRaises(TranslationCancelled):
+            service.translate("another text", cancellation_token=token)
+        self.assertEqual(backend.calls, ["long"])
+
+    def test_cancel_between_units_and_before_first_chunk(self):
+        backend = Backend()
+        token = CancellationToken()
+        service = TranslationService(backend, snapshot_loader=lambda _: None)
+        def after_unit(phase, *args):
+            if phase == "done":
+                token.cancel()
+        with self.assertRaises(TranslationCancelled):
+            service.translate_stream("One. Two.", on_sentence=after_unit,
+                                     cancellation_token=token)
+        self.assertEqual(backend.calls, ["One."])
+        token = CancellationToken()
+        backend.calls.clear()
+        backend.split_sentence = lambda text, direction: (token.cancel() or [text])
+        with self.assertRaises(TranslationCancelled):
+            service.translate("uncached", cancellation_token=token)
+        self.assertEqual(backend.calls, [])
+
+    def test_inference_chunk_boundaries_preserve_layout(self):
+        backend = Backend()
+        backend.split_sentence = lambda text, direction: split_sentence_to_chunks(text, len, 8)
+        service = TranslationService(backend, snapshot_loader=lambda _: None)
+        for source in ["  alpha    beta\t\tgamma.\r\n", "averylongwordwithoutspaces",
+                       "left\t\t right\nlast", "aaaaaaa       b", "🙂" * 20]:
+            with self.subTest(source=source):
+                self.assertEqual(service.translate(source), source.upper())
+                self.assertEqual(service.translate_stream(source), source.upper())
+        self.assertTrue(all(call == call.strip() for call in backend.calls))
+        # Formatting supplied by inference must not duplicate source separators.
+        backend.translate_chunk = lambda text, direction: " \t" + text.upper() + " \n"
+        self.assertEqual(service.translate("new    words"), "NEW    WORDS")
 
     def test_lossless_layout(self):
         rng = random.Random(42)

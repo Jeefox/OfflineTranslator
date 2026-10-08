@@ -29,23 +29,42 @@ split_sentence_to_chunks получает счётчик токенов (count_t
 абзацы и события стрима от кэша не зависят.
 """
 import dataclasses
+from concurrent.futures import Future, TimeoutError as FutureTimeoutError
 import re
-from threading import RLock
+from threading import Event, RLock
 from typing import Callable, Optional
 
 from dictionary_manager import default_dictionary_path, load_snapshot
 from sentence_pipeline import StreamUnit, assemble_output, split_units
 from translation_cache import TranslationCache
+from protected_tokens import mask_tokens, restore_tokens
+from translation_errors import (TranslationError, ModelLoadError, ModelUnavailableError,
+                                BackendError, ProtectedTokenError)
 
 
-class TranslationError(RuntimeError):
-    """Inference failed; both public translation APIs raise this exception."""
+class TranslationCancelled(Exception):
+    """Cooperative cancellation; no partial unit is cached or published."""
 
 
-_PROTECTED_TOKEN = re.compile(
-    r"https?://[^\s<>]+|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}|`[^`\n]+`|"
-    r"\b[\w]+(?:\.[\w]+){2,}\b|\b[0-9a-fA-F]{32,}\b|"
-    r"\b[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}\b")
+class CancellationToken:
+    def __init__(self, is_cancelled=None):
+        self._event = Event()
+        self._is_cancelled = is_cancelled
+
+    def cancel(self):
+        self._event.set()
+
+    def check(self):
+        if self._event.is_set() or (self._is_cancelled and self._is_cancelled()):
+            raise TranslationCancelled()
+
+
+def _check_cancelled(token):
+    if token is not None:
+        token.check()
+
+
+
 
 
 # ---------------------------------------------------------------------- #
@@ -111,6 +130,21 @@ def _split_long_word(word: str, count_tokens: Callable[[str], int],
 # ---------------------------------------------------------------------- #
 #  Общий сервис перевода                                                  #
 # ---------------------------------------------------------------------- #
+@dataclasses.dataclass(frozen=True)
+class TranslationChunk:
+    text: str
+    separator_before: str = ""
+    separator_after: str = ""
+
+    @classmethod
+    def from_source(cls, source):
+        start = len(source) - len(source.lstrip())
+        end = len(source.rstrip())
+        if end <= start:
+            return cls("", source, "")
+        return cls(source[start:end], source[:start], source[end:])
+
+
 class TranslationService:
     """Общий сервис перевода поверх движко-независимого TranslationBackend.
 
@@ -147,6 +181,9 @@ class TranslationService:
         self.translation_cache = TranslationCache()
 
         self._load_lock = RLock()
+        self._flight_lock = RLock()
+        self._inference_lock = RLock()
+        self._flights = {}
         self._loaded = False
         if auto_load:
             self.load()
@@ -156,8 +193,12 @@ class TranslationService:
             if not self._loaded:
                 try:
                     self.backend.load()
+                except ModelLoadError:
+                    raise
+                except (FileNotFoundError, ImportError) as exc:
+                    raise ModelUnavailableError(str(exc)) from exc
                 except Exception as exc:
-                    raise TranslationError(str(exc)) from exc
+                    raise ModelLoadError(str(exc)) from exc
                 self._loaded = True
 
     # ------------------------------------------------------------------ #
@@ -202,7 +243,53 @@ class TranslationService:
             paragraphs.append(current)
         return paragraphs
 
-    def _translate_unit(self, sentence: str, direction: str) -> str:
+    def _translate_unit(self, sentence: str, direction: str, cancellation_token=None) -> str:
+        key = self.translation_cache.make_key(self.model_identity, direction, sentence)
+        while True:
+            _check_cancelled(cancellation_token)
+            with self._flight_lock:
+                cached = self.translation_cache.get(key)
+                if cached is not None:
+                    return cached
+                future = self._flights.get(key)
+                owner = future is None
+                if owner:
+                    future = self._flights[key] = Future()
+            if not owner:
+                while not future.done():
+                    _check_cancelled(cancellation_token)
+                    try:
+                        future.exception(timeout=0.05)
+                    except FutureTimeoutError:
+                        pass
+                _check_cancelled(cancellation_token)
+                try:
+                    return future.result()
+                except TranslationCancelled:
+                    # A cancelled producer must not cancel an independent consumer.
+                    _check_cancelled(cancellation_token)
+                    continue
+            acquired = False
+            try:
+                while not acquired:
+                    _check_cancelled(cancellation_token)
+                    acquired = self._inference_lock.acquire(timeout=0.05)
+                result = self._translate_unit_once(sentence, direction, cancellation_token)
+            except BaseException as exc:
+                with self._flight_lock:
+                    self._flights.pop(key, None)
+                    future.set_exception(exc)
+                raise
+            else:
+                with self._flight_lock:
+                    self._flights.pop(key, None)
+                    future.set_result(result)
+                return result
+            finally:
+                if acquired:
+                    self._inference_lock.release()
+
+    def _translate_unit_once(self, sentence: str, direction: str, cancellation_token=None) -> str:
         """Перевод одного логического юнита (предложения) — единственная
         точка обращения к бэкенду для translate() и translate_stream()
         (Этап 13).
@@ -216,6 +303,7 @@ class TranslationService:
         выполняется в translate/translate_stream до разбивки на юниты
         (dictionary.json приоритетнее нейросети).
         """
+        _check_cancelled(cancellation_token)
         key = self.translation_cache.make_key(
             self.model_identity, direction, sentence)
         cached = self.translation_cache.get(key)
@@ -224,23 +312,31 @@ class TranslationService:
         def infer(source):
             if not source.strip():
                 return source
-            leading = source[:len(source) - len(source.lstrip())]
-            trailing = source[len(source.rstrip()):]
             try:
-                chunks = self.backend.split_sentence(source.strip(), direction)
-                result = " ".join(self.backend.translate_chunk(chunk, direction) for chunk in chunks)
+                sources = self.backend.split_sentence(source, direction)
+                if "".join(sources) != source:
+                    raise ValueError("Backend chunking must preserve exact source slices")
+                chunks = [TranslationChunk.from_source(chunk) for chunk in sources]
+                results = []
+                for chunk in chunks:
+                    _check_cancelled(cancellation_token)
+                    translated = (self.backend.translate_chunk(chunk.text, direction).strip()
+                                  if chunk.text else "")
+                    _check_cancelled(cancellation_token)
+                    results.append(chunk.separator_before + translated + chunk.separator_after)
+                return "".join(results)
+            except TranslationCancelled:
+                raise
             except Exception as exc:
-                raise TranslationError(str(exc)) from exc
-            return leading + result + trailing
+                raise BackendError(str(exc)) from exc
 
-        parts = []
-        previous = 0
-        for match in _PROTECTED_TOKEN.finditer(sentence):
-            parts.append(infer(sentence[previous:match.start()]))
-            parts.append(match.group())
-            previous = match.end()
-        parts.append(infer(sentence[previous:]))
-        translation = "".join(parts)
+        masked, mapping = mask_tokens(sentence)
+        translated = infer(masked)
+        try:
+            translation = restore_tokens(translated, mapping)
+        except ValueError as exc:
+            raise ProtectedTokenError(str(exc)) from exc
+        _check_cancelled(cancellation_token)
         self.translation_cache.put(key, translation)
         return translation
 
@@ -258,7 +354,7 @@ class TranslationService:
     # ------------------------------------------------------------------ #
     #  Публичный API                                                      #
     # ------------------------------------------------------------------ #
-    def translate(self, text: str, direction: str = "en-ru") -> str:
+    def translate(self, text: str, direction: str = "en-ru", *, cancellation_token=None) -> str:
         """Основная функция перевода.
 
         Args:
@@ -273,10 +369,10 @@ class TranslationService:
         в backend уходят только отсутствующие юниты; склейка абзацев
         и разделители от кэша не зависят.
         """
-        return self.translate_stream(text, direction)
+        return self.translate_stream(text, direction, cancellation_token=cancellation_token)
 
     def translate_stream(self, text: str, direction: str = "en-ru",
-                         on_sentence=None) -> str:
+                         on_sentence=None, *, cancellation_token=None) -> str:
         """Инкрементальный попредложенический перевод (тот же пайплайн,
         что и translate(), но с промежуточными результатами).
 
@@ -310,9 +406,11 @@ class TranslationService:
         Возвращает полный перевод — тот же текст, что и translate()
         для того же текста (источник истины для финального результата).
         """
+        _check_cancelled(cancellation_token)
         if not text.strip():
             return ""
         self.load()
+        _check_cancelled(cancellation_token)
 
         # Snapshot словаря читается один раз (как в translate()).
         snapshot = self._snapshot_loader(self.dictionary_path)
@@ -337,7 +435,9 @@ class TranslationService:
                                       new_paragraph=False, translation=dict_result,
                                       separator_before=before, separator_after=after)
                     on_sentence("start", 0, 1, unit)
+                    _check_cancelled(cancellation_token)
                     on_sentence("done", 1, 1, unit)
+                _check_cancelled(cancellation_token)
                 return before + dict_result + after
 
         units = split_units(text)
@@ -345,6 +445,7 @@ class TranslationService:
         translations = []
         done = 0
         for u in units:
+            _check_cancelled(cancellation_token)
             if on_sentence is not None:
                 unit = StreamUnit(src=u.text, src_start=u.start,
                                   src_end=u.end, new_paragraph=u.new_paragraph,
@@ -356,7 +457,8 @@ class TranslationService:
             # НЕ вызывается и юнит выдаётся сразу; по промаху — обычный
             # путь через backend (N технических chunks → склейка),
             # результат сохраняется в кэше.
-            translation = self._translate_unit(u.text, direction)
+            translation = self._translate_unit(u.text, direction, cancellation_token)
+            _check_cancelled(cancellation_token)
             done += 1
             if on_sentence is not None:
                 on_sentence("done", done, total,

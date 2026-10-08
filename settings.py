@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import re
+import tempfile
 from pathlib import Path
 
 try:  # pynput опционален: без него проверка хоткея — по паттерну
@@ -98,22 +99,26 @@ def normalize_hotkey(hotkey: str) -> str | None:
     if not parts:
         return None
     normalized = []
-    has_main = False  # комбинация из одних модификаторов невалидна
+    main_keys = 0
+    has_modifier = False
     for part in parts:
         name = part[1:-1].lower() if part.startswith("<") and part.endswith(">") else part.lower()
         if name in _MODIFIERS:
-            if name in ("command", "win", "super", "option"):
+            if name in ("command", "win", "super"):
                 name = "cmd"
+            elif name == "option":
+                name = "alt"
+            has_modifier = has_modifier or name in {"ctrl", "alt", "cmd", "alt_gr"}
             normalized.append(f"<{name}>")
         elif len(name) == 1 and name.isalnum():
             normalized.append(name)
-            has_main = True
+            main_keys += 1
         elif _HK_FUNC_RE.match(name) or name in _HK_NAMES:
             normalized.append(name)
-            has_main = True
+            main_keys += 1
         else:
             return None
-    if not has_main or len(normalized) != len(set(normalized)):
+    if main_keys != 1 or not has_modifier or len(normalized) != len(set(normalized)):
         return None
     result = "+".join(normalized)
     # Валидируем комбинацию собственными правилами выше. Некоторые версии
@@ -236,15 +241,30 @@ class Settings:
             self._data["source_lang"] = DEFAULTS["source_lang"]
             self._data["target_lang"] = DEFAULTS["target_lang"]
 
-    def save(self) -> None:
+    def save(self) -> bool:
+        temporary = None
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            self.path.write_text(
-                json.dumps(self._data, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8",
+                    prefix=".settings-", suffix=".tmp", dir=self.path.parent,
+                    delete=False) as output:
+                temporary = output.name
+                json.dump(self._data, output, ensure_ascii=False, indent=2)
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary, self.path)
+            return True
         except OSError as exc:
             logger.exception("Не удалось сохранить %s: %s", self.path, exc)
+            return False
+        finally:
+            if temporary is not None:
+                try:
+                    os.unlink(temporary)
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    logger.warning("Не удалось убрать временный файл настроек", exc_info=True)
 
     # ------------------------------------------------------------------ #
     #  Доступ                                                             #

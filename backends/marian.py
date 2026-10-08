@@ -129,7 +129,10 @@ class MarianBackend(TranslationBackend):
         "ru-en": "Helsinki-NLP/opus-mt-ru-en",
     }
 
-    def __init__(self, cache_dir: Optional[str] = None, directions=None):
+    def __init__(self, cache_dir: Optional[str] = None, directions=None, *, max_new_tokens=512):
+        if not isinstance(max_new_tokens, int) or isinstance(max_new_tokens, bool) or max_new_tokens < 1:
+            raise ValueError("max_new_tokens must be a positive integer")
+        self.max_new_tokens = max_new_tokens
         self.directions = tuple(directions or self.DIRECTIONS)
         # Постоянный кэш моделей и отдельные локальные папки.
         self.cache_manager = CacheManager(cache_dir)
@@ -138,7 +141,7 @@ class MarianBackend(TranslationBackend):
         self._models = {}
         # Безопасный лимит входных токенов (512 — лимит Marian, минус запас);
         # уточняется из config модели в load()
-        self._max_source_tokens = 480
+        self._max_source_tokens = {direction: 480 for direction in self.directions}
 
     # ------------------------------------------------------------------ #
     #  Загрузка                                                           #
@@ -152,13 +155,17 @@ class MarianBackend(TranslationBackend):
         try:
             # Определяем устройство
             if torch.cuda.is_available():
-                self.device = "cuda"
+                device = "cuda"
                 print(f"✓ Используем GPU: {torch.cuda.get_device_name(0)}")
             else:
+                device = "cpu"
                 print("✓ Используем CPU")
 
+            models, limits = {}, {}
             for direction in self.directions:
-                self._load_model_direction(direction, self.DIRECTIONS[direction])
+                models[direction], limits[direction] = self._load_model_direction(
+                    direction, self.DIRECTIONS[direction], device=device)
+            self._models, self._max_source_tokens, self.device = models, limits, device
 
             print("✓ Выбранные модели готовы к работе!")
             print("  Теперь можно работать офлайн")
@@ -168,7 +175,7 @@ class MarianBackend(TranslationBackend):
             print(f"✗ Ошибка загрузки моделей: {e}")
             raise
 
-    def _load_model_direction(self, direction: str, model_name: str):
+    def _load_model_direction(self, direction: str, model_name: str, *, device=None):
         """Загружает конкретную модель для направления перевода.
 
         Args:
@@ -203,17 +210,17 @@ class MarianBackend(TranslationBackend):
             trust_remote_code=False,
         )
 
-        if self.device == "cuda":
-            model = model.to(self.device)
+        device = self.device if device is None else device
+        if device == "cuda":
+            model = model.to(device)
 
         model.eval()  # Режим инференса
         # Реальный лимит входных токенов берём из config модели, а не хардкод
-        self._max_source_tokens = self._max_source_tokens_from_config(model)
-
-        self._models[direction] = (model, tokenizer)
+        limit = self._max_source_tokens_from_config(model)
 
         print(f"  ✓ Модель {direction} загружена")
         sys.stdout.flush()
+        return (model, tokenizer), limit
 
     # ------------------------------------------------------------------ #
     #  TranslationBackend                                                 #
@@ -221,7 +228,11 @@ class MarianBackend(TranslationBackend):
     @property
     def max_source_tokens(self) -> int:
         """Безопасный лимит входных токенов (из config модели, минус запас)."""
-        return self._max_source_tokens
+        return min(self._max_source_tokens.values(), default=480)
+
+    def max_source_tokens_for(self, direction):
+        self._model_for(direction)
+        return self._max_source_tokens[direction]
 
     def _model_for(self, direction: str):
         """(model, tokenizer) для направления; неизвестное — ValueError."""
@@ -241,7 +252,7 @@ class MarianBackend(TranslationBackend):
         return split_sentence_to_chunks(
             sentence,
             lambda text: count_tokens(tokenizer, text),
-            self.max_source_tokens,
+            self.max_source_tokens_for(direction),
         )
 
     def translate_chunk(self, chunk: str, direction: str) -> str:
@@ -256,14 +267,14 @@ class MarianBackend(TranslationBackend):
             return_tensors="pt",
             padding=True,
             truncation=True,
-            max_length=self.max_source_tokens
+            max_length=self.max_source_tokens_for(direction)
         ).to(self.device)
 
         # Генерация перевода
         with torch.no_grad():
             outputs = model.generate(
                 **inputs,
-                max_length=512,
+                max_new_tokens=self._generation_token_limit(model),
                 num_beams=4,
                 early_stopping=True
             )
@@ -274,6 +285,13 @@ class MarianBackend(TranslationBackend):
     # ------------------------------------------------------------------ #
     #  Внутреннее                                                         #
     # ------------------------------------------------------------------ #
+    def _generation_token_limit(self, model):
+        positions = getattr(getattr(model, "config", None), "max_position_embeddings", None)
+        # Decoder starts with one token; output must fit its own position table.
+        if isinstance(positions, int) and positions > 1:
+            return min(self.max_new_tokens, positions - 1)
+        return self.max_new_tokens
+
     def _max_source_tokens_from_config(self, model) -> int:
         """Безопасный лимит входных токенов: реальный лимит модели
         (config.max_position_embeddings, для Marian — 512) минус небольшой

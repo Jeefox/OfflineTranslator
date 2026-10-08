@@ -46,6 +46,7 @@ from dataclasses import dataclass
 from typing import Iterator, Optional, Tuple
 
 from dictionary_manager import model_cache_dir
+from translation_errors import ModelUnavailableError
 from local_models import cached_model_path, local_path, has_transformers_model, configured_path
 
 __all__ = [
@@ -69,10 +70,6 @@ GGUF_ENV_VAR = "OFFLINE_TRANSLATOR_GGUF"
 
 class ModelNotFoundError(KeyError):
     """Неизвестный model id (ModelRegistry/ModelManager)."""
-
-
-class ModelUnavailableError(RuntimeError):
-    """Модель известна, но сейчас недоступна локально."""
 
 
 def _validate_direction(direction: str) -> None:

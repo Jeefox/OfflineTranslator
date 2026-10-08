@@ -279,20 +279,20 @@ class OfflineTranslator(TranslationService):
         self.max_source_tokens = self.backend.max_source_tokens
         self.device = self.backend.device
 
-    def translate(self, text: str, direction: str = "en-ru") -> str:
+    def translate(self, text: str, direction: str = "en-ru", *, cancellation_token=None) -> str:
         """Перевод (контракт TranslationService.translate сохранён:
         возвращает str, ошибки — исключения). Перед вызовом
         сервиса проверяется направление выбранной модели (Этап 9)."""
         self._check_direction(direction)
-        return super().translate(text, direction)
+        return super().translate(text, direction, cancellation_token=cancellation_token)
 
     def translate_stream(self, text: str, direction: str = "en-ru",
-                         on_sentence=None) -> str:
+                         on_sentence=None, *, cancellation_token=None) -> str:
         """Инкрементальный перевод (контракт TranslationService.
         translate_stream сохранён: исключения пробрасываются). Направление
         выбранной модели проверяется до начала обработки (Этап 9)."""
         self._check_direction(direction)
-        return super().translate_stream(text, direction, on_sentence)
+        return super().translate_stream(text, direction, on_sentence, cancellation_token=cancellation_token)
 
     # ------------------------------------------------------------------ #
     #  Исторические приватные методы (контракт регрессионных тестов)      #

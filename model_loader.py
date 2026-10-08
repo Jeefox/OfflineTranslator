@@ -1,9 +1,13 @@
 """One daemon loader; pending requests coalesce to the most recent one."""
 import threading
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class ModelLoader:
-    def __init__(self):
+    def __init__(self, failure_callback=None):
+        self._failure_callback = failure_callback
         self._condition = threading.Condition()
         self._pending = None
         self._closed = False
@@ -13,9 +17,13 @@ class ModelLoader:
     def submit(self, function, *args):
         with self._condition:
             if self._closed:
-                return
+                return False
             self._pending = (function, args)
             self._condition.notify()
+            return True
+
+    def is_alive(self):
+        return self._thread.is_alive()
 
     def close(self):
         with self._condition:
@@ -31,4 +39,12 @@ class ModelLoader:
                     return
                 function, args = self._pending
                 self._pending = None
-            function(*args)
+            try:
+                function(*args)
+            except Exception as exc:
+                logger.exception("Model loading callback failed")
+                if self._failure_callback is not None:
+                    try:
+                        self._failure_callback(exc, function, args)
+                    except Exception:
+                        logger.exception("Model loader failure callback failed")

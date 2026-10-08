@@ -309,6 +309,21 @@ class FakeTranslator:
         return " ".join(translations)
 
 
+class FailingTranslator(FakeTranslator):
+    def translate(self, text, direction="en-ru"):
+        if text == "bad":
+            from translation_errors import BackendError
+            raise BackendError("native diagnostic")
+        return super().translate(text, direction)
+
+failed_samples = runner.run_main_pass(FailingTranslator(), "stub", [
+    {"id": "bad", "source": "bad", "direction": "en-ru", "category": "basic"},
+    {"id": "good", "source": "Hello.", "direction": "en-ru", "category": "basic"},
+])
+check("api_exception_recorded_without_aborting_dataset",
+      not failed_samples[0]["success"] and "BackendError" in failed_samples[0]["error"]
+      and failed_samples[1]["success"], failed_samples)
+
 DET_EXAMPLES = [{"id": "en001", "direction": "en-ru", "category": "basic",
                  "source": "Hello."}]
 run1 = [fake_sample("en001", "en-ru", "Привет.")

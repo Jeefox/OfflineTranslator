@@ -296,7 +296,7 @@ check("chunks: промах — 1 split и 2 translate_chunk",
       len(backend_m.split_calls) == 1 and len(backend_m.chunk_calls) == 2,
       (backend_m.split_calls, backend_m.chunk_calls))
 check("chunks: чанки склеены",
-      out12 == "[en-ru:Hel] [en-ru:lo.]", out12)
+      out12 == "[en-ru:Hel][en-ru:lo.]", out12)
 before_split = len(backend_m.split_calls)
 before_chunk = len(backend_m.chunk_calls)
 out12b = svc_m.translate("Hello.", "en-ru")
