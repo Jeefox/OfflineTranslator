@@ -63,6 +63,11 @@ class SettingsDialog(ctk.CTkToplevel):
 
     def __init__(self, app):
         super().__init__(app)
+        # CTkToplevel can be mapped by its base constructor.  Keep it hidden
+        # while the widget tree is built so Tk never paints a half-laid-out
+        # dialog.
+        self.withdraw()
+        self._layout_ready = False
         self.app = app
         self.title("Настройки")
         app._set_window_icon(self)
@@ -82,6 +87,10 @@ class SettingsDialog(ctk.CTkToplevel):
         self._syncing = False
 
         self._build_ui()
+        self.update_idletasks()
+        self._bind_scroll_events()
+        self._layout_ready = True
+        self.deiconify()
 
     # ------------------------------------------------------------------ #
     def _build_ui(self):
@@ -423,6 +432,34 @@ class SettingsDialog(ctk.CTkToplevel):
                 widget.configure(width=w)
         widget._canvas.bind("<Configure>", on_configure, add="+")
 
+    def _bind_scroll_events(self):
+        """Add Linux wheel events at the dialog level.
+
+        CustomTkinter's scrollable frame already handles ``<MouseWheel>``
+        through its own scoped ``bind_all`` callback.  Tk on Linux reports a
+        wheel as Button-4/5 instead, so handle those events on this toplevel;
+        events from child controls reach the toplevel bind tag without
+        replacing their own bindings.
+        """
+        self._scroll_bindings = (
+            self.bind("<Button-4>", lambda _event: self._scroll_by(-3), add="+"),
+            self.bind("<Button-5>", lambda _event: self._scroll_by(3), add="+"),
+        )
+
+    def _scroll_by(self, units):
+        canvas = self._scroll_frame._parent_canvas
+        if canvas.yview() != (0.0, 1.0):
+            canvas.yview_scroll(units, "units")
+
+    def _unbind_scroll_events(self):
+        for funcid in getattr(self, "_scroll_bindings", ()):
+            try:
+                self.unbind("<Button-4>" if funcid == self._scroll_bindings[0]
+                            else "<Button-5>", funcid)
+            except tk.TclError:
+                pass
+        self._scroll_bindings = ()
+
     # ------------------------------------------------------------------ #
     #  Служебное                                                         #
     # ------------------------------------------------------------------ #
@@ -464,6 +501,7 @@ class SettingsDialog(ctk.CTkToplevel):
         if self.app._settings_dialog is self:
             self.app._settings_dialog = None
         try:
+            self._unbind_scroll_events()
             self.destroy()
         except tk.TclError:
             pass
@@ -798,5 +836,3 @@ class SettingsDialog(ctk.CTkToplevel):
         else:
             self.app._set_status("ready", "Настройки сохранены")
         self._on_close()
-
-

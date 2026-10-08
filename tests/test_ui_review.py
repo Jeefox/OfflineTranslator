@@ -84,7 +84,16 @@ with tempfile.TemporaryDirectory(prefix="offline-ui-review-") as config, \
 
         app._open_settings()
         dialog = app._settings_dialog
+        assert dialog._layout_ready
+        assert dialog.state() == "normal"
         assert dialog._application_icon.width() == 256
+        # Tooltip is also revealed only after its complete widget tree and
+        # requested size have been prepared.
+        tooltip = main._Tooltip(app.settings_btn, "Проверка tooltip")
+        tooltip._show()
+        assert tooltip.window is not None
+        assert tooltip.window.state() == "normal"
+        tooltip._hide()
         app.settings.set("autotranslate", False)
         app.translator = object()
         app._translator_model_id = app._active_model_id
@@ -156,6 +165,23 @@ with tempfile.TemporaryDirectory(prefix="offline-ui-review-") as config, \
             positions.append(dialog._scroll_frame._parent_canvas.yview()[0])
         assert positions[0] < positions[1] <= positions[2], positions
         assert positions[2] > positions[0], positions
+        dialog.geometry("500x480")
+        pump(app)
+        canvas = dialog._scroll_frame._parent_canvas
+        canvas.yview_moveto(0.0)
+        dialog.model_note_label.event_generate("<Button-5>")
+        pump(app, .05)
+        assert canvas.yview()[0] > 0.0
+        dialog.model_note_label.event_generate("<Button-4>")
+        pump(app, .05)
+        assert canvas.yview()[0] == 0.0
+        # Closing and opening creates a fresh, fully prepared dialog without
+        # exposing an intermediate layout.
+        dialog._on_close()
+        app._open_settings()
+        reopened = app._settings_dialog
+        assert reopened is not dialog
+        assert reopened._layout_ready and reopened.state() == "normal"
         assert not callback_errors, callback_errors
         print("OK: UI review regressions passed")
     finally:

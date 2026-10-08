@@ -36,11 +36,18 @@ class _Tooltip:
             x = self.widget.winfo_rootx() + 12
             y = self.widget.winfo_rooty() + self.widget.winfo_height() + 5
             self.window = tk.Toplevel(self.widget)
+            # A newly-created Toplevel may be mapped before its children and
+            # colours are configured.  Prepare it off-screen from the window
+            # manager's point of view, then reveal it in one completed state.
+            self.window.withdraw()
+            self.window.configure(bg="#11111b")
             self.window.wm_overrideredirect(True)
-            self.window.wm_geometry("+%d+%d" % (x, y))
             text = self.text() if callable(self.text) else self.text
             tk.Label(self.window, text=text, justify="left", wraplength=360,
                      bg="#11111b", fg="#f5f5f5", padx=8, pady=5).pack()
+            self.window.update_idletasks()
+            self.window.wm_geometry("+%d+%d" % (x, y))
+            self.window.deiconify()
         except tk.TclError:
             self.window = None
 
