@@ -437,14 +437,20 @@ class SettingsDialog(ctk.CTkToplevel):
 
         CustomTkinter's scrollable frame already handles ``<MouseWheel>``
         through its own scoped ``bind_all`` callback.  Tk on Linux reports a
-        wheel as Button-4/5 instead, so handle those events on this toplevel;
-        events from child controls reach the toplevel bind tag without
-        replacing their own bindings.
+        wheel as Button-4/5 instead.  Bind those events to every widget in
+        the scrollable subtree: a binding on the toplevel is not a reliable
+        substitute when a control consumes an event in its own bind tags.
         """
-        self._scroll_bindings = (
-            self.bind("<Button-4>", lambda _event: self._scroll_by(-3), add="+"),
-            self.bind("<Button-5>", lambda _event: self._scroll_by(3), add="+"),
-        )
+        self._scroll_bindings = []
+        widgets = [self._scroll_frame]
+        while widgets:
+            widget = widgets.pop()
+            widgets.extend(widget.winfo_children())
+            for sequence, units in (("<Button-4>", -3), ("<Button-5>", 3)):
+                funcid = widget.bind(sequence,
+                                     lambda _event, step=units: self._scroll_by(step),
+                                     add="+")
+                self._scroll_bindings.append((widget, sequence, funcid))
 
     def _scroll_by(self, units):
         canvas = self._scroll_frame._parent_canvas
@@ -452,10 +458,9 @@ class SettingsDialog(ctk.CTkToplevel):
             canvas.yview_scroll(units, "units")
 
     def _unbind_scroll_events(self):
-        for funcid in getattr(self, "_scroll_bindings", ()):
+        for widget, sequence, funcid in getattr(self, "_scroll_bindings", ()):
             try:
-                self.unbind("<Button-4>" if funcid == self._scroll_bindings[0]
-                            else "<Button-5>", funcid)
+                widget.unbind(sequence, funcid)
             except tk.TclError:
                 pass
         self._scroll_bindings = ()

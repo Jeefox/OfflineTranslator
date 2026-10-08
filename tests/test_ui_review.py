@@ -169,15 +169,21 @@ with tempfile.TemporaryDirectory(prefix="offline-ui-review-") as config, \
         pump(app)
         canvas = dialog._scroll_frame._parent_canvas
         canvas.yview_moveto(0.0)
-        dialog.model_note_label.event_generate("<Button-5>")
-        pump(app, .05)
+        controls = (dialog.model_note_label._label, dialog.debounce_entry._entry,
+                    dialog.theme_note_label._label, dialog.save_btn._canvas)
+        for control in controls:
+            control.event_generate("<Button-5>")
+            pump(app, .02)
         assert canvas.yview()[0] > 0.0
-        dialog.model_note_label.event_generate("<Button-4>")
-        pump(app, .05)
+        for control in controls:
+            control.event_generate("<Button-4>")
+            pump(app, .02)
         assert canvas.yview()[0] == 0.0
+        assert dialog._scroll_bindings
         # Closing and opening creates a fresh, fully prepared dialog without
         # exposing an intermediate layout.
         dialog._on_close()
+        assert not dialog._scroll_bindings
         app._open_settings()
         reopened = app._settings_dialog
         assert reopened is not dialog
