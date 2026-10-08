@@ -1,71 +1,56 @@
-# -*- coding: utf-8 -*-
-"""Инкрементальный кэш перевода (Этап 13).
-
-In-memory кэш переводов логических юнитов (предложений), чтобы
-повторный перевод слегка изменённого исходного текста не переводил
-всё заново: неизменённые юниты берутся из кэша, изменённые/новые —
-идут в backend.
-
-Намеренно прост (этап — проверка механизма):
-- только память: нет SQLite, дисковой персистентности, Redis;
-  после перезапуска приложения кэш пуст;
-- нет LRU-эвикции, лимитов размера, fuzzy/семантического
-  сопоставления — ключ это точный текст юнита;
-- нет position-based ключей: позиция/индекс юнита в тексте НЕ
-  часть ключа — вставка/удаление/переупорядочение других
-  предложений не влияет на попадания;
-- ключ кэша: (model_id, direction, исходный текст юнита) —
-  результат одной модели/направления не используется для другой;
-  дубликаты исходных юнитов разделяют одну запись;
-- словарь (dictionary.json) кэшировать не нужно: точный lookup
-  всего текста выполняется до кэша и имеет приоритет над
-  нейросетью — словарь всегда актуален, кэш хранит только
-  результаты backend.
-
-Жизненный цикл: кэш живёт в экземпляре TranslationService
-(в GUI — один OfflineTranslator на выбранную модель; смена
-модели создаёт новый экземпляр и пустой кэш). model_id в ключе —
-защита от использования результата одной модели для другой.
-"""
-from typing import Optional
+"""Thread-safe LRU cache bounded by entry count and stored characters."""
+from collections import OrderedDict
+from threading import RLock
 
 
 class TranslationCache:
-    """In-memory dict: (model_id, direction, текст юнита) -> перевод юнита.
-
-    Доступ — из translate/translate_stream сервиса (в GUI — worker-поток
-    операции); конкурентный повторный перевод одного и того же текста
-    (отмена прежней операции) не ломает корректность: запись перезапишется.
-    """
-
-    def __init__(self) -> None:
-        self._entries = {}
+    def __init__(self, max_entries=1000, max_chars=2_000_000):
+        if max_entries < 0 or max_chars < 0:
+            raise ValueError("Cache limits must be non-negative")
+        self.max_entries = max_entries
+        self.max_chars = max_chars
+        self._entries = OrderedDict()
+        self._chars = 0
+        self._lock = RLock()
 
     @staticmethod
-    def make_key(model_id, direction: str, source_text: str) -> tuple:
-        """Ключ кэша: (model_id, direction, точный исходный текст юнита).
+    def make_key(model_id, direction, source_text):
+        return model_id, direction, source_text
 
-        model_id — идентичность модели (TranslationService.model_identity;
-        в базовом сервисе — None). Позиция юнита в тексте намеренно НЕ
-        входит в ключ.
-        """
-        return (model_id, direction, source_text)
+    @staticmethod
+    def _size(key, value):
+        return len(key[-1]) + len(value)
 
-    def get(self, key: tuple) -> Optional[str]:
-        """Перевод юнита по ключу или None (не в кэше)."""
-        return self._entries.get(key)
+    def get(self, key):
+        with self._lock:
+            value = self._entries.get(key)
+            if value is not None:
+                self._entries.move_to_end(key)
+            return value
 
-    def put(self, key: tuple, translated_text: str) -> None:
-        """Сохранить/заменить перевод юнита (только полный перевод
-        юнита; частичные/обрезанные результаты не кэшируются)."""
-        self._entries[key] = translated_text
+    def put(self, key, translated_text):
+        with self._lock:
+            old = self._entries.pop(key, None)
+            if old is not None:
+                self._chars -= self._size(key, old)
+            size = self._size(key, translated_text)
+            if not self.max_entries or size > self.max_chars:
+                return
+            self._entries[key] = translated_text
+            self._chars += size
+            while len(self._entries) > self.max_entries or self._chars > self.max_chars:
+                key, value = self._entries.popitem(last=False)
+                self._chars -= self._size(key, value)
 
-    def clear(self) -> None:
-        """Очистить кэш (in-memory: при перезапуске процесса он и так пуст)."""
-        self._entries.clear()
+    def clear(self):
+        with self._lock:
+            self._entries.clear()
+            self._chars = 0
 
-    def __contains__(self, key: tuple) -> bool:
-        return key in self._entries
+    def __contains__(self, key):
+        with self._lock:
+            return key in self._entries
 
-    def __len__(self) -> int:
-        return len(self._entries)
+    def __len__(self):
+        with self._lock:
+            return len(self._entries)

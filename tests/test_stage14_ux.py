@@ -234,13 +234,13 @@ main.OfflineTranslator = _orig_cls  # worker уже отработал (ошиб
 check("err: статус — понятный, без сырого исключения",
       app._status[1]
       == "Не удалось загрузить модель. Откройте настройки и укажите локальную модель "
-         "или распакуйте архив моделей рядом с приложением.", app._status)
+         "или распакуйте архив моделей рядом с приложением. Предыдущая модель сохранена и доступна для перевода.", app._status)
 for dev in ("ModuleNotFoundError", "No module named", "simulated",
             "RuntimeError", "torch"):
     check("err: в статусе нет developer-детали %r" % dev,
           dev not in app._status[1], app._status)
-check("err: после init_error кнопка ОСТАЁТСЯ отключённой",
-      app.translate_btn.cget("state") == "disabled")
+check("err: предыдущая модель остаётся доступна",
+      app.translate_btn.cget("state") == "normal" and app.translator is not None)
 # Восстановление: смена направления запускает новую загрузку.
 app.change_direction("EN → RU")
 check("err: recovery — модель перезагружена",

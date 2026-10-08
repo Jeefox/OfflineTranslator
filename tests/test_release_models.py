@@ -5,9 +5,11 @@ import tempfile
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 from zipfile import ZipFile
+from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import build
+from app_icons import asset_path, application_icon, action_icon
 import local_models
 from model_registry import ModelManager
 from backends.marian import MarianBackend
@@ -72,13 +74,37 @@ with tempfile.TemporaryDirectory(prefix="release-models-") as temporary:
     binary = dist / ("OfflineTranslator.exe" if build.os.name == "nt" else "OfflineTranslator")
     binary.write_bytes(b'executable')
     with patch.object(build, "BUILD_DIR", root / "new-build"):
-        assert build.prepare_icon().is_file()
+        icon = build.prepare_icon()
+        assert icon.read_bytes() == asset_path("offline_translator.ico").read_bytes()
+        with Image.open(icon) as image:
+            assert image.format == "ICO"
+            assert image.ico.sizes() == {(n, n) for n in (16, 24, 32, 48, 64, 128, 256)}
+    with Image.open(asset_path("offline_translator.png")) as image:
+        assert image.size == (256, 256)
+        assert image.tobytes() == application_icon().tobytes()
+    with patch.object(sys, "_MEIPASS", str(root), create=True):
+        assert asset_path("offline_translator.png") == root / "assets" / "offline_translator.png"
+    for name in ("settings", "swap", "copy", "clear"):
+        image = action_icon(name, "#ffffff")
+        assert image.size == (24, 24) and image.mode == "RGBA"
+        assert image.getbbox() is not None
+        assert image.getpixel((0, 0))[3] == 0
     with patch.object(build, "DIST_DIR", dist), \
-            patch("build.subprocess.run") as invoke, \
-            patch("build.prepare_bundle_cache", side_effect=AssertionError("weights bundled")):
+            patch("build.subprocess.run") as invoke:
         build.build([])
         args = invoke.call_args.args[0]
         assert "--onefile" in args
+        sep = ";" if build.os.name == "nt" else ":"
+        assert f"assets{sep}assets" in args
         assert not any("cache" in str(arg) for arg in args)
+    (dist / "OfflineTranslator.exe").write_bytes(b'executable')
+    with patch.object(build, "DIST_DIR", dist), \
+            patch.object(build, "BUILD_DIR", root / "windows-build"), \
+            patch.object(build, "os", SimpleNamespace(name="nt", walk=build.os.walk, environ=build.os.environ)), \
+            patch("build.subprocess.run") as invoke:
+        build.build([])
+        args = invoke.call_args.args[0]
+        assert "assets;assets" in args
+        assert args[args.index("--icon") + 1] == str(root / "windows-build" / "offline_translator.ico")
 local_models.configure_paths()
 print("OK: separate release models, offline sources and model-free build passed")

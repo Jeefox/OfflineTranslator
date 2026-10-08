@@ -53,8 +53,27 @@ with tempfile.TemporaryDirectory(prefix="offline-ui-review-") as config, \
         pump(app)
         assert abs(app.input_text.winfo_width() - app.output_text.winfo_width()) <= 1
 
+        assert app._application_icon.width() == 256
+        for button in (app.settings_btn, app.swap_btn, app.copy_btn, app.clear_btn):
+            assert button.cget("text") == ""
+            assert button.cget("image") is not None
+            assert button._canvas.cget("takefocus") == "1"
+            # Проверяем реальное событие клавиатуры, а не прямой invoke().
+            with patch.object(button, "_command") as command:
+                button._canvas.focus_force()
+                pump(app)
+                assert button.cget("border_width") == 2
+                for key in ("<Return>", "<space>"):
+                    button._canvas.event_generate(key)
+                    pump(app, .05)
+                assert command.call_count == 2
+        app.input_text.focus_set()
+        pump(app)
+        assert app.clear_btn.cget("border_width") == 0
+
         app._open_settings()
         dialog = app._settings_dialog
+        assert dialog._application_icon.width() == 256
         app.settings.set("autotranslate", False)
         app.translator = object()
         app._translator_model_id = app._active_model_id
@@ -64,6 +83,7 @@ with tempfile.TemporaryDirectory(prefix="offline-ui-review-") as config, \
         assert "ошибка загрузки" not in dialog.model_var.get()
         for theme in ("dark", "light"):
             app._set_theme(theme)
+            assert main.ctk.get_appearance_mode().lower() == theme
             for width in (500, 560, 700, 900):
                 dialog.geometry(f"{width}x640")
                 pump(app)

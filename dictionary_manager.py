@@ -15,7 +15,7 @@
   с существующей запрещена (см. DictionaryManager.find_conflict); зеркало
   той же пары (a -> b и b -> a) конфликтом НЕ является;
 - legacy-файлы (зеркала, конфликты) загружаются с детерминированным
-  last-wins: более поздняя в файле запись побеждает, с предупреждением.
+  проверкой 1:1: конфликтующие связи отклоняются с предупреждением.
 
 OfflineTranslator не хранит словарь в памяти: в начале каждого translate()
 он читает свежий snapshot (load_snapshot), поэтому изменения словаря через
@@ -210,21 +210,21 @@ def build_snapshot(data) -> Optional[DictionarySnapshot]:
 
     Возвращает None, если top-level — не dict.
 
-    Записи обрабатываются в порядке файла, last-wins (legacy-поведение):
-    для одного термина более поздняя запись побеждает более раннюю (с
-    предупреждением). Зеркальные записи (a -> b и b -> a) — одна
+    Конфликтующие связи 1:1 отклоняются; snapshot возвращает None. Зеркальные записи (a -> b и b -> a) — одна
     логическая пара, конфликтом не являются.
     """
     if not isinstance(data, dict):
         print("⚠ dictionary.json: top-level не JSON-объект — словарь не загружен")
         return None
     lookup: Dict[str, str] = {}
+    conflicts = []
 
     def _put(term_id: str, partner_disp: str):
         prev = lookup.get(term_id)
         if prev is not None and _norm_key(prev) != _norm_key(partner_disp):
+            conflicts.append(term_id)
             print(f"⚠ Словарь: термин «{term_id}» уже связан с «{prev}» — "
-                  f"действует более поздняя связь «{partner_disp}»")
+                  f"конфликтующая связь «{partner_disp}»")
         lookup[term_id] = partner_disp
 
     for key, value in data.items():
@@ -238,6 +238,9 @@ def build_snapshot(data) -> Optional[DictionarySnapshot]:
             continue
         _put(k, v)             # прямое направление
         _put(_norm_key(v), k)  # обратное (форма ключа = lower-форма)
+    if conflicts:
+        print("⚠ dictionary.json: конфликтующие пары — словарь не загружен")
+        return None
     return DictionarySnapshot(_pairs_from_lookup(lookup), lookup)
 
 

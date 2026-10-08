@@ -50,6 +50,8 @@ class Unit:
     start: int
     end: int
     new_paragraph: bool
+    separator_before: str | None = None
+    separator_after: str = ""
 
 
 @dataclass(frozen=True)
@@ -65,61 +67,65 @@ class StreamUnit:
     src_end: int
     new_paragraph: bool
     translation: str = ""
+    separator_before: str | None = None
+    separator_after: str = ""
+
+
+class SentenceSegmenter:
+    """Sentence boundaries with line breaks and common abbreviations protected."""
+    abbreviations = {"dr", "mr", "mrs", "ms", "prof", "sr", "jr", "e.g", "i.e",
+                     "etc", "vs", "т.д", "т.п", "т.е", "г", "ул", "рис", "им"}
+
+    def spans(self, text):
+        start = 0
+        previous_end = 0
+        for match in re.finditer(r"\s+", text):
+            before = text[previous_end:match.start()]
+            newline = "\n" in match.group() or "\r" in match.group()
+            boundary = before.endswith((".", "!", "?", "…"))
+            if boundary and not newline and before.endswith("."):
+                token = re.search(r"([\w.]+)\.$", before)
+                if token:
+                    word = token.group(1)
+                    if word.lower() in self.abbreviations:
+                        boundary = False
+            if newline or boundary:
+                yield start, match.start()
+                start = match.end()
+            previous_end = match.end()
+        yield start, len(text)
 
 
 def split_units(text: str) -> list:
-    """Разбивает текст на логические предложения (абзацы → предложения).
-
-    Правила совпадают с translator.OfflineTranslator._split_text:
-    абзацы — блоки между пустыми строками; предложение заканчивается по
-    . ! ? … и последующим пробелам. Порядок сохраняется; разделители
-    (пробелы) в юниты не входят — восстанавливаются при сборке.
-    """
+    """Store exact whitespace between units independently of inference text."""
     units = []
-    # Разделитель абзацев НЕ входит ни в предыдущий, ни в следующий
-    # (ровно как в re.split): абзац заканчивается в m.start(), следующий
-    # начинается в m.end().
-    para_seps = [(m.start(), m.end()) for m in _PARA_RE.finditer(text)]
-    para_starts = [0] + [e for _s, e in para_seps]
-    para_ends = [s for s, _e in para_seps] + [len(text)]
-    for ps, pe in zip(para_starts, para_ends):
-        para = text[ps:pe]
-        # Границы предложений внутри абзаца: разделитель (пробел(ы) после
-        # .!?…) НЕ входит ни в предыдущее, ни в следующее предложение —
-        # ровно как в re.split (правило translator._split_text).
-        seps = [(m.start(), m.end()) for m in _SENT_RE.finditer(para)]
-        bounds = []
-        prev = 0
-        for s, e in seps:
-            bounds.append((prev, s))
-            prev = e
-        bounds.append((prev, len(para)))
-        first_in_para = True
-        for s, e in bounds:
-            seg = para[s:e]
-            if seg.strip():
-                units.append(Unit(seg, ps + s, ps + e,
-                                  new_paragraph=first_in_para and bool(units)))
-                first_in_para = False
+    previous_end = 0
+    for start, end in SentenceSegmenter().spans(text):
+        segment = text[start:end]
+        if not segment.strip():
+            continue
+        left = len(segment) - len(segment.lstrip())
+        right = len(segment.rstrip())
+        start, end = start + left, start + right
+        separator = text[previous_end:start]
+        units.append(Unit(text[start:end], start, end,
+                          bool(units) and bool(_PARA_RE.search(separator)),
+                          separator_before=separator))
+        previous_end = end
+    if units:
+        from dataclasses import replace
+        units[-1] = replace(units[-1], separator_after=text[previous_end:])
     return units
 
 
 def assemble_output(units: list, translations: list) -> str:
-    """Собирает финальный перевод из переводов логических предложений.
-
-    Правила склейки совпадают с OfflineTranslator.translate: предложения
-    внутри абзаца соединяются пробелом, абзацы — пустой строкой.
-    """
-    paras = []
-    cur = []
-    for u, t in zip(units, translations):
-        if u.new_paragraph and cur:
-            paras.append(" ".join(cur))
-            cur = []
-        cur.append(t)
-    if cur:
-        paras.append(" ".join(cur))
-    return "\n\n".join(paras)
+    parts = []
+    for index, (unit, translation) in enumerate(zip(units, translations)):
+        separator = unit.separator_before
+        if separator is None:
+            separator = ("\n\n" if unit.new_paragraph else " ") if index else ""
+        parts.append(separator + translation + unit.separator_after)
+    return "".join(parts)
 
 
 def line_offsets(text: str) -> list:

@@ -187,15 +187,12 @@ check("core_ru_key_oriented", snap.pairs == [("car", "машина")],
 check("core_ru_key_both_dirs",
       snap.lookup("car") == "машина" and snap.lookup("машина") == "car")
 
-# Legacy-конфликт: last-wins по порядку файла + первая запись не теряется
-write_json(core, {"car": "машина", "vehicle": "машина",
-                  "bad": 42, "empty": "   "})
+# Conflicting legacy graphs are rejected rather than producing asymmetric lookup.
+write_json(core, {"car": "машина", "vehicle": "машина"})
+check("legacy_conflict_rejected", load_snapshot(core) is None)
+write_json(core, {"car": "машина", "bad": 42, "empty": "   "})
 snap = load_snapshot(core)
-check("legacy_conflict_last_wins",
-      snap.lookup("машина") == "vehicle", str(snap.lookup("машина")))
-check("legacy_conflict_first_kept", snap.lookup("car") == "машина")
-check("legacy_invalid_skipped",
-      snap.lookup("bad") is None and snap.lookup("empty") is None)
+check("legacy_invalid_skipped", snap.lookup("bad") is None and snap.lookup("empty") is None)
 
 # Top-level не dict -> None
 write_json(core, [1, 2, 3])

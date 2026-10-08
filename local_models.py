@@ -1,5 +1,19 @@
 """Локальные источники моделей без импортов inference-библиотек."""
 import os
+from contextvars import ContextVar
+from contextlib import contextmanager
+
+_request_paths = ContextVar("model_request_paths", default=None)
+
+
+@contextmanager
+def using_paths(paths):
+    token = _request_paths.set(paths)
+    try:
+        yield
+    finally:
+        _request_paths.reset(token)
+
 from pathlib import Path
 import sys
 
@@ -25,6 +39,9 @@ def configured_path(direction):
 
 
 def local_path(direction):
+    captured = _request_paths.get()
+    if captured is not None:
+        return captured.get(direction)
     explicit = _paths.get(direction) or os.environ.get(ENV_KEYS[direction], "")
     if explicit:
         return str(Path(explicit).expanduser().resolve())

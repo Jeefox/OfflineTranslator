@@ -3,17 +3,15 @@
 from __future__ import annotations
 
 import logging
+from app_icons import application_icon
 
 logger = logging.getLogger("offline_translate.tray")
 
 try:
     import pystray  # type: ignore
-    from PIL import Image, ImageDraw  # type: ignore
     PYSTRAY_AVAILABLE = True
 except Exception as exc:  # noqa: BLE001
     pystray = None
-    Image = None
-    ImageDraw = None
     PYSTRAY_AVAILABLE = False
     PYSTRAY_IMPORT_ERROR = f"{type(exc).__name__}: {exc}"
 
@@ -39,11 +37,7 @@ class SystemTray:
         if self.active:
             return True
         try:
-            image = Image.new("RGBA", (64, 64), (30, 30, 46, 255))
-            draw = ImageDraw.Draw(image)
-            draw.rounded_rectangle((8, 8, 56, 56), radius=10,
-                                   fill=(137, 180, 250, 255))
-            draw.text((23, 18), "A", fill=(30, 30, 46, 255))
+            image = application_icon(64)
             menu = pystray.Menu(
                 pystray.MenuItem("Показать", self._show),
                 pystray.MenuItem("Выйти", self._quit),

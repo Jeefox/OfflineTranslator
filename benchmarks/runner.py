@@ -37,9 +37,8 @@ import time
 from benchmarks import dataset as bdataset
 from benchmarks import metrics as m
 
-#: Префикс, который TranslationService.translate() возвращает при
-#: ошибке бэкенда (production-контракт; translate() не бросает, а
-#: возвращает «Ошибка перевода: ...»).
+#: Legacy error-string compatibility for older/custom translators.
+#: The current service raises exceptions (handled by the runner).
 ERROR_PREFIX = "Ошибка перевода: "
 
 

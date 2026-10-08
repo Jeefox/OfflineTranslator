@@ -21,6 +21,15 @@ import json
 import os
 import re
 import sys
+
+
+def expect_translation_error(function, *args):
+    try:
+        function(*args)
+    except (RuntimeError, ValueError) as exc:
+        return "Ошибка перевода: " + str(exc)
+    raise AssertionError("Translation must raise on failure")
+
 import tempfile
 import types
 
@@ -174,7 +183,7 @@ class BrokenBackend(StubBackend):
 
 
 svc_broken = TranslationService(BrokenBackend(), dictionary_path=dict_path)
-r = svc_broken.translate("hello world", "en-ru")
+r = expect_translation_error(svc_broken.translate, "hello world", "en-ru")
 check("broken_translate_error_msg", r == "Ошибка перевода: boom", r)
 try:
     svc_broken.translate_stream("hello world", "en-ru")
@@ -203,7 +212,7 @@ cnt_chars = lambda s: len(s)  # noqa: E731
 big = "a" * 25 + " " + "b" * 25
 chunks_big = split_sentence_to_chunks(big, cnt_chars, 10)
 check("char_split_no_loss",
-      "".join(chunks_big) == "a" * 25 + "b" * 25, str(chunks_big))
+      "".join(chunks_big) == big, str(chunks_big))
 check("char_split_limit",
       all(len(c) <= 10 for c in chunks_big), str(chunks_big))
 

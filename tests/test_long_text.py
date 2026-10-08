@@ -236,8 +236,9 @@ check("punct_multi_chunk", len(CALLS) >= 2, str(len(CALLS)))
 url = "https://" + "a" * 4000
 reset()
 r = t.translate("See %s for details." % url, "en-ru")
-assert_full(r, "See %s for details." % url, EN)
-check("url_multi_chunk", len(CALLS) >= 3, str(len(CALLS)))
+check("url_preserved", url in r, r[:100])
+check("url_not_sent_to_inference", all(url not in c[1] for c in CALLS))
+check("url_surrounding_text_translated", len(CALLS) == 2, str(CALLS))
 
 # 11. Текст ровно в лимите (480 токенов) -> один chunk
 exact = " ".join("w%d" % i for i in range(478))  # 2 спец + 478 слов = 480

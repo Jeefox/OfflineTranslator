@@ -183,7 +183,8 @@ class MarianBackend(TranslationBackend):
         if source and not has_transformers_model(source):
             raise FileNotFoundError("Нет конфигурации или весов локальной модели: " + source)
         source = source or model_name
-        offline = bool(local_path(direction)) or getattr(sys, "frozen", False)
+        offline = (bool(local_path(direction)) or getattr(sys, "frozen", False)
+                   or os.environ.get("OFFLINE_TRANSLATOR_OFFLINE", "").lower() in ("1", "true", "yes"))
 
         tokenizer = AutoTokenizer.from_pretrained(
             source,

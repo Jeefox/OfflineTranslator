@@ -30,11 +30,22 @@ split_sentence_to_chunks получает счётчик токенов (count_t
 """
 import dataclasses
 import re
+from threading import RLock
 from typing import Callable, Optional
 
 from dictionary_manager import default_dictionary_path, load_snapshot
 from sentence_pipeline import StreamUnit, assemble_output, split_units
 from translation_cache import TranslationCache
+
+
+class TranslationError(RuntimeError):
+    """Inference failed; both public translation APIs raise this exception."""
+
+
+_PROTECTED_TOKEN = re.compile(
+    r"https?://[^\s<>]+|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}|`[^`\n]+`|"
+    r"\b[\w]+(?:\.[\w]+){2,}\b|\b[0-9a-fA-F]{32,}\b|"
+    r"\b[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}\b")
 
 
 # ---------------------------------------------------------------------- #
@@ -46,64 +57,38 @@ def split_sentence_to_chunks(sentence: str,
     """Разбивает предложение на куски, укладывающиеся в лимит токенов.
 
     Короткое предложение возвращается как есть (один кусок → один
-    inference). Сначала пробует естественные границы (, ; : — –),
-    затем по словам; все части сохраняются, порядок не меняется.
+    inference). Сборка идёт по границам слов с сохранением исходных
+    срезов; сверхдлинные слова разбиваются безопасным fallback.
 
     Args:
         sentence: логическое предложение (текст юнита);
         count_tokens: счётчик входных токенов движка (текст -> int);
         limit: безопасный лимит входных токенов движка.
     """
+    if limit < 1:
+        raise ValueError("Token limit must be positive")
+    if not sentence:
+        return []
     if count_tokens(sentence) <= limit:
         return [sentence]
-    # 1) естественные границы внутри слишком длинного «предложения»
-    parts = [p for p in re.split(r'(?<=[,;:—–])\s*', sentence) if p.strip()]
-    # 2) жадная сборка частей в куски по лимиту токенов
+    # Keep original slices: no whitespace is invented or discarded by chunking.
+    parts = re.findall(r"\S+\s*|\s+", sentence)
     chunks = []
     current = ""
     for part in parts:
-        if not current:
-            current = part
-        elif count_tokens(current + " " + part) <= limit:
-            current += " " + part
-        else:
+        if current and count_tokens(current + part) > limit:
             chunks.append(current)
-            current = part
+            current = ""
+        if count_tokens(part) > limit:
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.extend(_split_long_word(part, count_tokens, limit))
+        else:
+            current += part
     if current:
         chunks.append(current)
-    # 3) кусок всё ещё длиннее лимита — разбиваем по словам
-    result = []
-    for chunk in chunks:
-        if count_tokens(chunk) <= limit:
-            result.append(chunk)
-        else:
-            result.extend(_split_by_words(chunk, count_tokens, limit))
-    return result
-
-
-def _split_by_words(text: str, count_tokens: Callable[[str], int],
-                    limit: int) -> list:
-    """Жадная сборка слов в куски по лимиту токенов (не режет слова)."""
-    words = text.split()
-    chunks = []
-    current = []
-    for word in words:
-        if current and count_tokens(" ".join(current + [word])) > limit:
-            chunks.append(" ".join(current))
-            current = [word]
-        else:
-            current.append(word)
-    if current:
-        chunks.append(" ".join(current))
-    # 4) крайний случай: отдельное «слово» (URL, техническая строка)
-    #    длиннее лимита — разбиваем по символам, чтобы ничего не потерять
-    result = []
-    for chunk in chunks:
-        if count_tokens(chunk) <= limit:
-            result.append(chunk)
-        else:
-            result.extend(_split_long_word(chunk, count_tokens, limit))
-    return result
+    return chunks
 
 
 def _split_long_word(word: str, count_tokens: Callable[[str], int],
@@ -117,7 +102,7 @@ def _split_long_word(word: str, count_tokens: Callable[[str], int],
         while end > start + 1 and count_tokens(word[start:end]) > limit:
             end = start + (end - start) // 2
         if count_tokens(word[start:end]) > limit:
-            end = start + 1
+            raise ValueError("A single character exceeds the token limit")
         pieces.append(word[start:end])
         start = end
     return pieces
@@ -145,7 +130,8 @@ class TranslationService:
     """
 
     def __init__(self, backend, dictionary_path: Optional[str] = None,
-                 snapshot_loader: Callable[[str], object] = load_snapshot):
+                 snapshot_loader: Callable[[str], object] = load_snapshot,
+                 auto_load: bool = True):
         # Движок: постоянного состояния в памяти нет — только ресурсы
         # inference (модели/токенизаторы), которые он загружает сам.
         self.backend = backend
@@ -160,7 +146,19 @@ class TranslationService:
         # перевод изменённого текста не переводит неизменённые юниты.
         self.translation_cache = TranslationCache()
 
-        backend.load()
+        self._load_lock = RLock()
+        self._loaded = False
+        if auto_load:
+            self.load()
+
+    def load(self):
+        with self._load_lock:
+            if not self._loaded:
+                try:
+                    self.backend.load()
+                except Exception as exc:
+                    raise TranslationError(str(exc)) from exc
+                self._loaded = True
 
     # ------------------------------------------------------------------ #
     #  Этап 13: идентичность модели для ключа кэша                        #
@@ -185,8 +183,8 @@ class TranslationService:
 
         Абзац — блок между пустыми строками; предложение заканчивается
         по . ! ? … и последующим пробелам/переводам строк.
-        Порядок сохраняется; теряются только пробелы (восстанавливаются
-        при сборке результата), слова и знаки не теряются.
+        Этот исторический helper возвращает только содержимое юнитов.
+        Публичный API собирает результат по исходным разделителям.
 
         Правила разбивки — sentence_pipeline.split_units: единый источник
         логических юнитов (те же юниты использует инкрементальный
@@ -223,10 +221,26 @@ class TranslationService:
         cached = self.translation_cache.get(key)
         if cached is not None:
             return cached
-        chunks = self.backend.split_sentence(sentence, direction)
-        translation = " ".join(
-            self.backend.translate_chunk(chunk, direction) for chunk in chunks
-        )
+        def infer(source):
+            if not source.strip():
+                return source
+            leading = source[:len(source) - len(source.lstrip())]
+            trailing = source[len(source.rstrip()):]
+            try:
+                chunks = self.backend.split_sentence(source.strip(), direction)
+                result = " ".join(self.backend.translate_chunk(chunk, direction) for chunk in chunks)
+            except Exception as exc:
+                raise TranslationError(str(exc)) from exc
+            return leading + result + trailing
+
+        parts = []
+        previous = 0
+        for match in _PROTECTED_TOKEN.finditer(sentence):
+            parts.append(infer(sentence[previous:match.start()]))
+            parts.append(match.group())
+            previous = match.end()
+        parts.append(infer(sentence[previous:]))
+        translation = "".join(parts)
         self.translation_cache.put(key, translation)
         return translation
 
@@ -259,38 +273,7 @@ class TranslationService:
         в backend уходят только отсутствующие юниты; склейка абзацев
         и разделители от кэша не зависят.
         """
-        if not text.strip():
-            return ""
-
-        # Snapshot словаря читается ОДИН раз в начале перевода и используется
-        # во время всего translate() (включая все куски): изменение словаря
-        # в процессе текущего перевода действует только с следующего вызова.
-        snapshot = self._snapshot_loader(self.dictionary_path)
-        if snapshot is None:
-            if not self._dict_load_warned:
-                print(f"⚠ Словарь не загружен ({self.dictionary_path}), "
-                      f"используем только нейросетевой перевод")
-                self._dict_load_warned = True
-        else:
-            self._dict_load_warned = False
-
-        # Проверяем словарь (двунаправленное точное совпадение)
-        if snapshot is not None:
-            dict_result = snapshot.lookup(text)
-            if dict_result is not None:
-                return dict_result
-
-        # Используем движок (inference — у бэкенда)
-        try:
-            # Абзацы → предложения → куски, укладывающиеся в лимит входных
-            # токенов; каждый кусок переводится отдельно, порядок сохраняется
-            translated_paragraphs = [
-                self._translate_paragraph(sentences, direction)
-                for sentences in self._split_text(text)
-            ]
-            return "\n\n".join(translated_paragraphs)
-        except Exception as e:
-            return f"Ошибка перевода: {str(e)}"
+        return self.translate_stream(text, direction)
 
     def translate_stream(self, text: str, direction: str = "en-ru",
                          on_sentence=None) -> str:
@@ -329,6 +312,7 @@ class TranslationService:
         """
         if not text.strip():
             return ""
+        self.load()
 
         # Snapshot словаря читается один раз (как в translate()).
         snapshot = self._snapshot_loader(self.dictionary_path)
@@ -345,13 +329,16 @@ class TranslationService:
         if snapshot is not None:
             dict_result = snapshot.lookup(text)
             if dict_result is not None:
+                start = len(text) - len(text.lstrip())
+                end = len(text.rstrip())
+                before, after = text[:start], text[end:]
                 if on_sentence is not None:
-                    unit = StreamUnit(src=text, src_start=0, src_end=len(text),
-                                      new_paragraph=False,
-                                      translation=dict_result)
+                    unit = StreamUnit(src=text[start:end], src_start=start, src_end=end,
+                                      new_paragraph=False, translation=dict_result,
+                                      separator_before=before, separator_after=after)
                     on_sentence("start", 0, 1, unit)
                     on_sentence("done", 1, 1, unit)
-                return dict_result
+                return before + dict_result + after
 
         units = split_units(text)
         total = len(units)
@@ -360,7 +347,9 @@ class TranslationService:
         for u in units:
             if on_sentence is not None:
                 unit = StreamUnit(src=u.text, src_start=u.start,
-                                  src_end=u.end, new_paragraph=u.new_paragraph)
+                                  src_end=u.end, new_paragraph=u.new_paragraph,
+                                  separator_before=u.separator_before,
+                                  separator_after=u.separator_after)
                 on_sentence("start", done, total, unit)
             # Одно логическое предложение → один перевод предложения
             # (Этап 13): сначала in-memory кэш — при попадании backend
