@@ -226,7 +226,13 @@ def make_hf_cache(cache_dir, repo_id):
                         "snapshots", "deadbeef")
     os.makedirs(snap)
     with open(os.path.join(snap, "config.json"), "w") as f:
-        f.write("{}")
+        f.write('{"model_type":"marian"}')
+    with open(os.path.join(snap, "model.safetensors"), "wb") as f:
+        f.write(b"weights")
+    for filename, content in (("tokenizer_config.json", b'{}'), ("vocab.json", b'{}'),
+                              ("source.spm", b'tokenizer'), ("target.spm", b'tokenizer')):
+        with open(os.path.join(snap, filename), "wb") as file:
+            file.write(content)
 
 
 mgr = ModelManager(cache_dir=TMP)  # чистая, пустая кэш-директория

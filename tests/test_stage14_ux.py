@@ -110,6 +110,19 @@ from sentence_pipeline import (  # noqa: E402
 
 CFG_DIR = tempfile.mkdtemp(prefix="ot_stage14_cfg_")
 os.environ["OFFLINE_TRANSLATE_CONFIG"] = CFG_DIR
+# Availability fixtures must not depend on the developer's existing HF cache.
+os.environ["XDG_CACHE_HOME"] = os.path.join(CFG_DIR, "cache-root")
+from dictionary_manager import model_cache_dir
+for direction in ("en-ru", "ru-en"):
+    folder = os.path.join(model_cache_dir(), "models--Helsinki-NLP--opus-mt-" + direction,
+                          "snapshots", "fake-safe")
+    os.makedirs(folder, exist_ok=True)
+    for filename, content in (("config.json", b'{"model_type":"marian"}'),
+                              ("model.safetensors", b'weights'),
+                              ("tokenizer_config.json", b'{}'), ("vocab.json", b'{}'),
+                              ("source.spm", b'tokenizer'), ("target.spm", b'tokenizer')):
+        with open(os.path.join(folder, filename), "wb") as file:
+            file.write(content)
 # hy-mt2 по умолчанию «недоступна» (GGUF не указан) — сценарий фолбэка.
 _orig_gguf = os.environ.get(GGUF_ENV_VAR)
 os.environ.pop(GGUF_ENV_VAR, None)

@@ -46,7 +46,7 @@ from dataclasses import dataclass
 from typing import Iterator, Optional, Tuple
 
 from dictionary_manager import model_cache_dir
-from local_models import local_path, has_transformers_model, configured_path
+from local_models import cached_model_path, local_path, has_transformers_model, configured_path
 
 __all__ = [
     "ModelDescriptor",
@@ -246,21 +246,12 @@ def _marian_hf_cache_has_model(cache_dir: str,
 
     HuggingFace-кэш (v2-layout):
     <cache>/models--<org>--<name>/snapshots/<rev>/config.json (+ веса).
-    Наличие config.json в любом snapshot — репозиторий скачан целиком
-    (проверка по файловой структуре; без загрузки и без импорта
-    transformers).
+    Проверяется весь layout Marian и каждый safetensors shard.
+    Выбранный локальный snapshot совпадает с путём загрузки backend.
     """
     if not cache_dir or not repo_id or "/" not in repo_id:
         return False
-    repo_dir = os.path.join(
-        cache_dir, "models--" + repo_id.replace("/", "--"))
-    snapshots = os.path.join(repo_dir, "snapshots")
-    if not os.path.isdir(snapshots):
-        return False
-    for snapshot in os.listdir(snapshots):
-        if os.path.isfile(os.path.join(snapshots, snapshot, "config.json")):
-            return True
-    return False
+    return cached_model_path(cache_dir, repo_id) is not None
 
 
 def _bundled_model_cache_dir() -> Optional[str]:

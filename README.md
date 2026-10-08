@@ -365,3 +365,26 @@ xvfb-run -a .venv/bin/python scripts/run_tests.py
 `requirements-gguf.txt` и задайте `OFFLINE_TRANSLATOR_BUILD_GGUF=1`.
 В workflow_dispatch есть отдельная опция Linux GGUF. Обычные архивы релиза
 не могут использовать GGUF только от подключения файла весов.
+
+## Безопасный формат Marian-весов
+
+Приложение принимает только `model.safetensors` либо sharded safetensors.
+Файлы `pytorch_model.bin`, `.pt` и `.pth` не используются при переводе.
+Загрузка модели и токенизатора выполняется с `trust_remote_code=False`;
+загрузка весов — с `use_safetensors=True`. Минимальный runtime закреплён
+на PyTorch 2.10.0 (исправление GHSA-63cw-57p8-fm3p).
+
+Стандартные Helsinki-репозитории пока публикуют pickle-веса. Поэтому
+`python -m scripts.download_release_models` — отдельный сборочный шаг:
+он получает только фиксированные официальные ревизии, проверяет исправленный
+PyTorch, преобразует веса с `weights_only=True` в safetensors и переключает
+локальный кэш на подготовленную версию. Приложение не выполняет конвертацию
+пользовательских `.bin`. Старые архивы моделей нужно заменить safetensors-архивом.
+Для первого запуска исходников рекомендуется заранее выполнить этот шаг,
+затем запустить приложение с `OFFLINE_TRANSLATOR_OFFLINE=1`.
+
+Проверка доступности Marian едина для настроек, реестра, загрузчика и архивов:
+нужны `config.json` с типом `marian`, `tokenizer_config.json`, `vocab.json`,
+`source.spm`, `target.spm` и непустые safetensors-веса. Для разделённых весов
+проверяются все файлы, указанные в `model.safetensors.index.json`;
+для отдельных словарей также нужен `target_vocab.json`.

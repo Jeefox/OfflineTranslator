@@ -9,7 +9,7 @@ import re
 from hotkey_agent import PYNPUT_AVAILABLE
 from input_shortcuts import _physical_key_name
 from settings import normalize_hotkey, validate_value
-from local_models import configure_paths, local_path, has_transformers_model
+from local_models import configure_paths, local_path, has_transformers_model, validate_transformers_model
 from model_registry import ModelNotFoundError
 from ui_widgets import _Tooltip, PALETTES
 logger = logging.getLogger("offline_translate.gui")
@@ -726,8 +726,12 @@ class SettingsDialog(ctk.CTkToplevel):
             path = normalized[key]
             if path:
                 path = normalized[key] = os.path.abspath(os.path.expanduser(path))
-            if path and not (has_transformers_model(path) if key != "gguf_path" else
-                             os.path.isfile(path) and path.lower().endswith(".gguf")):
+            if path and key != "gguf_path":
+                validation = validate_transformers_model(path)
+                if not validation.available:
+                    self._show_error("Неполная локальная модель: " + validation.reason)
+                    return
+            elif path and not (os.path.isfile(path) and path.lower().endswith(".gguf")):
                 self._show_error("Не найдена локальная модель: " + path)
                 return
         paths_changed = any(self.app.settings.get(key) != normalized[key]

@@ -25,13 +25,14 @@ with tempfile.TemporaryDirectory(prefix="release-models-") as temporary:
         (folder / "refs" / "main").write_text("revision", encoding="utf-8")
         snapshot = folder / "snapshots" / "revision"
         snapshot.mkdir(parents=True)
-        for name, data in (("config.json", b'{}'), ("pytorch_model.bin", b'weights'),
-                           ("source.spm", b'tokenizer')):
+        for name, data in (("config.json", b'{"model_type":"marian"}'), ("model.safetensors", b'weights'),
+                           ("source.spm", b'tokenizer'), ("target.spm", b'tokenizer'),
+                           ("tokenizer_config.json", b'{}'), ("vocab.json", b'{}')):
             (snapshot / name).write_bytes(data)
     archive = package_models(root / "cache", root / "models.zip")
     with ZipFile(archive) as packed:
         assert "models/marian-en-ru/config.json" in packed.namelist()
-        assert "models/marian-ru-en/pytorch_model.bin" in packed.namelist()
+        assert "models/marian-ru-en/model.safetensors" in packed.namelist()
         packed.extractall(root / "portable")
     assert split_archive(archive) == [archive]
     assert archive.exists()
@@ -56,6 +57,8 @@ with tempfile.TemporaryDirectory(prefix="release-models-") as temporary:
         backend.load()
         assert model_load.call_count == tokenizer_load.call_count == 1
         assert model_load.call_args.args[0] == str(own)
+        assert model_load.call_args.kwargs["use_safetensors"] is True
+        assert model_load.call_args.kwargs["trust_remote_code"] is False
         assert model_load.call_args.kwargs["local_files_only"] is True
         assert tokenizer_load.call_args.kwargs["local_files_only"] is True
     local_models.configure_paths()

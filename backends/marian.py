@@ -26,7 +26,7 @@ from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
 from backends.base import TranslationBackend
 from dictionary_manager import model_cache_dir
-from local_models import local_path, has_transformers_model
+from local_models import local_path, has_transformers_model, cached_model_path, validate_transformers_model
 from translation_service import split_sentence_to_chunks
 
 __all__ = ["CacheManager", "MarianBackend", "count_tokens"]
@@ -179,23 +179,28 @@ class MarianBackend(TranslationBackend):
         sys.stdout.flush()
 
         cache_dir = self.cache_manager.cache_dir
-        source = local_path(direction)
-        if source and not has_transformers_model(source):
-            raise FileNotFoundError("Нет конфигурации или весов локальной модели: " + source)
+        source = local_path(direction) or cached_model_path(cache_dir, model_name)
+        if source:
+            validation = validate_transformers_model(source)
+            if not validation.available:
+                raise FileNotFoundError("Неполная локальная модель: " + validation.reason)
         source = source or model_name
-        offline = (bool(local_path(direction)) or getattr(sys, "frozen", False)
+        offline = (bool(source != model_name) or getattr(sys, "frozen", False)
                    or os.environ.get("OFFLINE_TRANSLATOR_OFFLINE", "").lower() in ("1", "true", "yes"))
 
         tokenizer = AutoTokenizer.from_pretrained(
             source,
             cache_dir=cache_dir,
             local_files_only=offline,
+            trust_remote_code=False,
         )
 
         model = AutoModelForSeq2SeqLM.from_pretrained(
             source,
             cache_dir=cache_dir,
             local_files_only=offline,
+            use_safetensors=True,
+            trust_remote_code=False,
         )
 
         if self.device == "cuda":
