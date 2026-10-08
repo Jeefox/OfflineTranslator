@@ -34,6 +34,7 @@ main.py создаёт OfflineTranslator() без параметров и не �
 """
 import logging
 import os
+from local_models import local_path
 from typing import Optional
 
 # Логи: технические детали (model_id, направление) — сюда, а не в текст
@@ -208,7 +209,7 @@ class OfflineTranslator(TranslationService):
             # возможность скачать модель при первом запуске, если интернет
             # доступен. В офлайн-бандле CacheManager предварительно
             # восстановит вложенный кэш из _MEIPASS/cache.
-            return MarianBackend(cache_dir=cache_dir), descriptor.directions
+            return MarianBackend(cache_dir=cache_dir, directions=descriptor.directions), descriptor.directions
         if descriptor.backend == "llama_cpp":
             if gguf_path is not None:
                 # Явный путь — существующий контракт LlamaCppBackend:
@@ -231,7 +232,7 @@ class OfflineTranslator(TranslationService):
                         ".gguf-файлу) или задайте переменную окружения "
                         "%s. Модель не скачивается автоматически."
                         % (model_id, descriptor.name, GGUF_ENV_VAR))
-                path = os.path.expanduser(str(os.environ[GGUF_ENV_VAR]))
+                path = local_path("gguf")
             return LlamaCppBackend(path), descriptor.directions
         raise ValueError(
             "OfflineTranslator(model_id=%r): неизвестный backend %r в "

@@ -439,10 +439,16 @@ except ValueError as e:
 # Часть 9. GUI не знает, какой движок выполняется
 # ---------------------------------------------------------------------
 main_src = open(os.path.join(ROOT, "main.py"), encoding="utf-8").read()
-low = main_src.lower()
-check("gui_no_engine_words",
-      not any(w in low for w in ("gguf", "llama", "hy-mt2", "marian")),
-      str([w for w in ("gguf", "llama", "hy-mt2", "marian") if w in low]))
+import ast
+engine_imports = [node.module for node in ast.walk(ast.parse(main_src))
+                  if isinstance(node, ast.ImportFrom) and node.module
+                  and node.module.startswith("backends")]
+engine_imports += [alias.name for node in ast.walk(ast.parse(main_src))
+                   if isinstance(node, ast.Import) for alias in node.names
+                   if alias.name.startswith("backends")]
+# Названия форматов допустимы в настройках локальных файлов; inference
+# по-прежнему создаётся только фасадом, без прямых импортов движков GUI.
+check("gui_no_engine_imports", not engine_imports, str(engine_imports))
 ot_lines = [l.strip() for l in main_src.splitlines()
             if "OfflineTranslator(" in l]
 check("gui_translator_no_engine_args",

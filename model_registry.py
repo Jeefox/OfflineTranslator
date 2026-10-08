@@ -46,6 +46,7 @@ from dataclasses import dataclass
 from typing import Iterator, Optional, Tuple
 
 from dictionary_manager import model_cache_dir
+from local_models import local_path, has_transformers_model, configured_path
 
 __all__ = [
     "ModelDescriptor",
@@ -278,13 +279,13 @@ def _gguf_env_available(model_marker: Optional[str]) -> bool:
     OFFLINE_TRANSLATOR_GGUF указывает на существующий .gguf-файл, и
     (если задан маркер) имя файла содержит ожидаемое имя модели.
     """
-    path = os.environ.get(GGUF_ENV_VAR, "").strip()
+    path = local_path("gguf") or ""
     if not path:
         return False
     path = os.path.expanduser(path)
     if not os.path.isfile(path) or not path.lower().endswith(".gguf"):
         return False
-    if (model_marker
+    if (model_marker and not configured_path("gguf")
             and model_marker.lower() not in os.path.basename(path).lower()):
         return False
     return True
@@ -458,6 +459,10 @@ class ModelManager:
     # ------------------------------------------------------------------ #
     def _availability(self, descriptor: ModelDescriptor) -> bool:
         if descriptor.backend == "marian":
+            direction = descriptor.directions[0]
+            path = local_path(direction)
+            if path:
+                return has_transformers_model(path)
             if _marian_hf_cache_has_model(
                     self.cache_dir, descriptor.hf_model_id):
                 return True

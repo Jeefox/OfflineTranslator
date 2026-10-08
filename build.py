@@ -25,9 +25,8 @@
     customtkinter, pystray и Pillow; llama-cpp-python и plyer — если
     установлены.
 
-Чего НЕТ в бандле (сознательно):
-  - переводные модели. Обе базовые Marian-модели встраиваются в бандль из
-    заранее заполненного локального HF-кэша;
+Чего НЕТ в бандле:
+  - переводные модели: поставляются отдельным архивом с папкой models;
   - GGUF-модель (Hy-MT2) не скачивается никогда: это локальный файл
     пользователя, путь задаётся переменной окружения OFFLINE_TRANSLATOR_GGUF.
 """
@@ -181,6 +180,7 @@ def prepare_icon() -> Path:
     except ImportError:
         fail("Pillow is required to generate the application icon")
     path = BUILD_DIR / "offline_translator.ico"
+    path.parent.mkdir(parents=True, exist_ok=True)
     image = Image.new("RGBA", (256, 256), "#1e1e2e")
     draw = ImageDraw.Draw(image)
     draw.rounded_rectangle((18, 18, 238, 238), radius=42, fill="#89b4fa")
@@ -198,22 +198,6 @@ def build(optional_deps: list[str]) -> None:
     is_windows = os.name == "nt"
     # Разделитель --add-data: ";" на Windows, ":" на POSIX.
     sep = ";" if is_windows else ":"
-    cache_dir = Path(model_cache_dir())
-    required_models = (
-        "Helsinki-NLP/opus-mt-en-ru",
-        "Helsinki-NLP/opus-mt-ru-en",
-    )
-    missing_models = [
-        model for model in required_models
-        if not _marian_hf_cache_has_model(str(cache_dir), model)
-    ]
-    if missing_models:
-        fail(
-            "offline bundle requires both Marian models in the local cache: "
-            + ", ".join(missing_models)
-            + "\n  Start the app once with internet access, then build again."
-        )
-    bundle_cache_dir = prepare_bundle_cache(cache_dir)
     args = [
         sys.executable,
         "-m",
@@ -225,9 +209,6 @@ def build(optional_deps: list[str]) -> None:
         # Словарь — read-only копия в корне бандля (_MEIPASS/dictionary.json).
         "--add-data",
         f"dictionary.json{sep}.",
-        # Базовые Marian-модели обязательны для офлайн-первого запуска.
-        "--add-data",
-        f"{bundle_cache_dir}{sep}cache",
         # Данные/бинарники/сабмодули библиотек (нативные расширения, темы, .so).
         "--collect-all",
         "customtkinter",

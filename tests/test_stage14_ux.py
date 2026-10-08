@@ -233,8 +233,8 @@ check("err: статус стал error",
 main.OfflineTranslator = _orig_cls  # worker уже отработал (ошибка в очереди)
 check("err: статус — понятный, без сырого исключения",
       app._status[1]
-      == "Не удалось загрузить модель. Проверьте настройки модели "
-         "и доступность необходимых файлов.", app._status)
+      == "Не удалось загрузить модель. Откройте настройки и укажите локальную модель "
+         "или распакуйте архив моделей рядом с приложением.", app._status)
 for dev in ("ModuleNotFoundError", "No module named", "simulated",
             "RuntimeError", "torch"):
     check("err: в статусе нет developer-детали %r" % dev,

@@ -16,6 +16,8 @@ def split_archive(source: Path, chunk_size: int = DEFAULT_CHUNK_SIZE) -> list[Pa
         raise FileNotFoundError(source)
     if chunk_size <= 0:
         raise ValueError("chunk_size must be positive")
+    if source.stat().st_size <= chunk_size:
+        return [source]
 
     parts: list[Path] = []
     with source.open("rb") as stream:

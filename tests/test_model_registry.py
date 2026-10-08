@@ -341,7 +341,7 @@ if translator is not None:
     class _FakeMarian:
         name = "marian"
 
-        def __init__(self, cache_dir=None):
+        def __init__(self, cache_dir=None, directions=None):
             self.cache_manager = None
             self.device = "cpu"
             self.max_source_tokens = 480
@@ -418,7 +418,7 @@ if translator is not None:
         name = "marian"
         instances = []
 
-        def __init__(self, cache_dir=None):
+        def __init__(self, cache_dir=None, directions=None):
             self.cache_dir = cache_dir
             self.cache_manager = None
             self.device = "cpu"

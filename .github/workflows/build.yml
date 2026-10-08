@@ -2,168 +2,120 @@ name: Build OfflineTranslator
 
 on:
   push:
-    tags:
-      - 'v*'
-  workflow_dispatch:  # ручной запуск: сборка + артефакты, без Release
+    tags: ['v*']
+  workflow_dispatch:
 
 env:
-  # Python 3.11 поддерживается выбранной компактной CPU-сборкой PyTorch
-  # на Linux, Windows и macOS.
   PYTHON_VERSION: "3.11"
 
 jobs:
-  build-linux:
-    name: Build (Linux x86_64)
-    runs-on: ubuntu-latest
+  build:
+    name: Build (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            platform: Linux
+          - os: windows-latest
+            platform: Windows
+          - os: macos-15
+            platform: macOS
+    runs-on: ${{ matrix.os }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: Configure model cache
-        run: echo "XDG_CACHE_HOME=$RUNNER_TEMP" >> "$GITHUB_ENV"
-
+      - name: Install CPU runtime
+        if: runner.os != 'macOS'
+        run: python -m pip install "torch==2.6.0" --index-url https://download.pytorch.org/whl/cpu
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          # CPU-сборка torch (без CUDA-библиотек) — компактный артефакт.
-          python -m pip install "torch==2.3.1" --index-url https://download.pytorch.org/whl/cpu
-          python -m pip install -r requirements.txt
-          python -m pip install pyinstaller
-
-      - name: Download bundled Marian models
-        run: python -m scripts.download_release_models
-
-      - name: Build (PyInstaller onefile)
+          python -m pip install -r requirements.txt pyinstaller
+          python -m pip install "llama-cpp-python>=0.3.0,<0.4"
+      - name: Build executable without model weights
         run: python build.py
-
-      - name: Archive
-        run: tar -czf OfflineTranslator-Linux.tar.gz -C dist OfflineTranslator
-
-      - name: Split archive below GitHub asset limit
-        run: python -m scripts.split_release_archive OfflineTranslator-Linux.tar.gz
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: OfflineTranslator-Linux
-          path: OfflineTranslator-Linux.tar.gz.*
-          retention-days: 30
-
-  build-windows:
-    name: Build (Windows x86_64)
-    runs-on: windows-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: Configure model cache
+      - name: Archive Windows executable
+        if: runner.os == 'Windows'
         shell: pwsh
-        run: Add-Content $env:GITHUB_ENV "LOCALAPPDATA=$env:RUNNER_TEMP\OfflineTranslator"
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install "torch==2.3.1" --index-url https://download.pytorch.org/whl/cpu
-          python -m pip install -r requirements.txt
-          python -m pip install pyinstaller
-
-      - name: Download bundled Marian models
-        run: python -m scripts.download_release_models
-
-      - name: Build (PyInstaller onefile)
-        run: python build.py
-
-      - name: Archive
         run: Compress-Archive -Path dist/OfflineTranslator.exe -DestinationPath OfflineTranslator-Windows.zip
-
-      - name: Split archive below GitHub asset limit
-        run: python -m scripts.split_release_archive OfflineTranslator-Windows.zip
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      - name: Archive Unix executable
+        if: runner.os != 'Windows'
+        run: tar -czf OfflineTranslator-${{ matrix.platform }}.tar.gz -C dist OfflineTranslator
+      - name: Split only oversized archives
+        shell: bash
+        run: |
+          for archive in OfflineTranslator-*.zip OfflineTranslator-*.tar.gz; do
+            if [ -f "$archive" ]; then python -m scripts.split_release_archive "$archive"; fi
+          done
+      - uses: actions/upload-artifact@v4
         with:
-          name: OfflineTranslator-Windows
-          path: OfflineTranslator-Windows.zip.*
+          name: OfflineTranslator-${{ matrix.platform }}
+          path: |
+            OfflineTranslator-*.zip*
+            OfflineTranslator-*.tar.gz*
+          if-no-files-found: error
           retention-days: 30
 
-  build-macos:
-    name: Build (macOS arm64)
-    runs-on: macos-latest
+  models:
+    name: Package separate Marian models
+    runs-on: ubuntu-22.04
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: Configure model cache
-        run: echo "XDG_CACHE_HOME=$RUNNER_TEMP" >> "$GITHUB_ENV"
-
-      - name: Install dependencies
+      - name: Install download dependency
+        run: python -m pip install "huggingface-hub>=0.20,<1"
+      - name: Download and package models
+        env:
+          XDG_CACHE_HOME: ${{ runner.temp }}
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install "torch==2.3.1" --index-url https://download.pytorch.org/whl/cpu
-          python -m pip install -r requirements.txt
-          python -m pip install pyinstaller
-
-      - name: Download bundled Marian models
-        run: python -m scripts.download_release_models
-
-      - name: Build (PyInstaller onefile)
-        run: python build.py
-
-      - name: Archive
-        run: tar -czf OfflineTranslator-macOS.tar.gz -C dist OfflineTranslator
-
-      - name: Split archive below GitHub asset limit
-        run: python -m scripts.split_release_archive OfflineTranslator-macOS.tar.gz
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+          python -m scripts.download_release_models
+          python -m scripts.package_release_models
+          python -m scripts.split_release_archive OfflineTranslator-Models-Marian.zip
+      - uses: actions/upload-artifact@v4
         with:
-          name: OfflineTranslator-macOS
-          path: OfflineTranslator-macOS.tar.gz.*
+          name: OfflineTranslator-Models-Marian
+          path: OfflineTranslator-Models-Marian.zip*
+          if-no-files-found: error
           retention-days: 30
 
   release:
-    name: Create GitHub Release
-    if: github.event_name == 'push'  # только push тега; workflow_dispatch — без Release
-    needs: [build-linux, build-windows, build-macos]
-    runs-on: ubuntu-latest
+    name: Publish GitHub Release
+    if: github.event_name == 'push'
+    needs: [build, models]
+    runs-on: ubuntu-22.04
     permissions:
       contents: write
     steps:
-      - name: Download build artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           path: release-assets
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+          merge-multiple: true
+      - name: Calculate checksums
+        working-directory: release-assets
+        run: sha256sum OfflineTranslator-* > SHA256SUMS.txt
+      - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
+          fail_on_unmatched_files: true
           generate_release_notes: true
-          files: |
-            release-assets/OfflineTranslator-Linux/OfflineTranslator-Linux.tar.gz.*
-            release-assets/OfflineTranslator-Windows/OfflineTranslator-Windows.zip.*
-            release-assets/OfflineTranslator-macOS/OfflineTranslator-macOS.tar.gz.*
+          files: release-assets/*
           body: |
-            Архивы разделены на части из-за ограничения GitHub в 2 GiB на один файл.
+            Приложение и модели скачиваются отдельно.
 
-            Linux/macOS: скачайте все части одной платформы и выполните:
-            `cat OfflineTranslator-Linux.tar.gz.* > OfflineTranslator-Linux.tar.gz`
+            1. Скачайте и распакуйте архив приложения для своей ОС.
+            2. Для стандартного Marian-перевода скачайте OfflineTranslator-Models-Marian.zip
+               и распакуйте папку models рядом с исполняемым файлом.
+            3. Если у вас уже есть модели, архив моделей скачивать не нужно:
+               укажите папки совместимых Marian-моделей или GGUF Hy-MT2 в Настройках.
 
-            Windows: скачайте все части и выполните в cmd:
-            `copy /b OfflineTranslator-Windows.zip.001+OfflineTranslator-Windows.zip.002 OfflineTranslator-Windows.zip`
+            Исполняемые файлы не содержат весов и не скачивают модели при запуске.
+            Для EN→RU и RU→EN можно подключить модели независимо.
+            Произвольные архитектуры GGUF/Transformers не поддерживаются.
+
+            SHA256SUMS.txt содержит контрольные суммы архивов.
+            Если архив превышает лимит GitHub, скачайте все его части .001, .002, …
+            и объедините их перед распаковкой (cat на Unix, copy /b на Windows).

@@ -51,6 +51,9 @@ DEFAULTS: dict = {
     # этот модуль (он не знает реестр), а приложение (settings.json с
     # неизвестным id — приложение откатит на дефолт и пересохранит).
     "model_id": None,
+    "marian_en_ru_path": "",
+    "marian_ru_en_path": "",
+    "gguf_path": "",
 }
 
 # Текущая архитектура поддерживает только EN/RU (модели Helsinki-NLP opus-mt),
@@ -172,6 +175,8 @@ def validate_value(key: str, value) -> tuple[bool, object]:
         if num is None or not (1 <= num <= 120):
             return False, DEFAULTS["notification_duration_sec"]
         return True, float(num)
+    if key in ("marian_en_ru_path", "marian_ru_en_path", "gguf_path"):
+        return (True, value.strip()) if isinstance(value, str) else (False, "")
     if key == "model_id":
         # Лёгкая проверка: id — непустая строка (или None — «модель не
         # выбрана», приложение разрешит дефолт для направления). Соотнесение

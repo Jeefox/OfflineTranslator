@@ -26,6 +26,7 @@ from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
 from backends.base import TranslationBackend
 from dictionary_manager import model_cache_dir
+from local_models import local_path, has_transformers_model
 from translation_service import split_sentence_to_chunks
 
 __all__ = ["CacheManager", "MarianBackend", "count_tokens"]
@@ -128,8 +129,9 @@ class MarianBackend(TranslationBackend):
         "ru-en": "Helsinki-NLP/opus-mt-ru-en",
     }
 
-    def __init__(self, cache_dir: Optional[str] = None):
-        # Постоянный кэш моделей (не зависит от CWD; для EXE — из бандля)
+    def __init__(self, cache_dir: Optional[str] = None, directions=None):
+        self.directions = tuple(directions or self.DIRECTIONS)
+        # Постоянный кэш моделей и отдельные локальные папки.
         self.cache_manager = CacheManager(cache_dir)
         self.device = "cpu"
         # direction -> (model, tokenizer); заполняется в load()
@@ -155,13 +157,10 @@ class MarianBackend(TranslationBackend):
             else:
                 print("✓ Используем CPU")
 
-            # Загружаем модель EN→RU
-            self._load_model_direction("en-ru", self.DIRECTIONS["en-ru"])
+            for direction in self.directions:
+                self._load_model_direction(direction, self.DIRECTIONS[direction])
 
-            # Загружаем модель RU→EN
-            self._load_model_direction("ru-en", self.DIRECTIONS["ru-en"])
-
-            print("✓ Обе модели готовы к работе!")
+            print("✓ Выбранные модели готовы к работе!")
             print("  Теперь можно работать офлайн")
             sys.stdout.flush()
 
@@ -180,15 +179,22 @@ class MarianBackend(TranslationBackend):
         sys.stdout.flush()
 
         cache_dir = self.cache_manager.cache_dir
+        source = local_path(direction)
+        if source and not has_transformers_model(source):
+            raise FileNotFoundError("Нет конфигурации или весов локальной модели: " + source)
+        source = source or model_name
+        offline = bool(local_path(direction)) or getattr(sys, "frozen", False)
 
         tokenizer = AutoTokenizer.from_pretrained(
-            model_name,
+            source,
             cache_dir=cache_dir,
+            local_files_only=offline,
         )
 
         model = AutoModelForSeq2SeqLM.from_pretrained(
-            model_name,
+            source,
             cache_dir=cache_dir,
+            local_files_only=offline,
         )
 
         if self.device == "cuda":

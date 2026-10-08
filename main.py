@@ -3,11 +3,14 @@
 import bisect
 import customtkinter as ctk
 import logging
+import os
+import sys
 import platform
 import re
 import socket
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import messagebox, filedialog
+from local_models import configure_paths, local_path, has_transformers_model
 from translator import OfflineTranslator
 from settings import Settings, normalize_hotkey, validate_value
 from hotkey_agent import HotkeyAgent, PYNPUT_AVAILABLE
@@ -21,6 +24,13 @@ from model_registry import (
 )
 import queue
 import threading
+
+# Windows --windowed / pythonw не предоставляет stdout/stderr.
+# Бэкенды используют print/flush; отсутствие консоли не должно ломать загрузку.
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w", encoding="utf-8")
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, "w", encoding="utf-8")
 
 # Логи: технические детали (причины ошибок, сырые исключения) пишутся
 # сюда, а НЕ в пользовательский статус (Этап 14).
@@ -136,7 +146,8 @@ class _Tooltip:
             self.window = tk.Toplevel(self.widget)
             self.window.wm_overrideredirect(True)
             self.window.wm_geometry("+%d+%d" % (x, y))
-            tk.Label(self.window, text=self.text, justify="left", wraplength=360,
+            text = self.text() if callable(self.text) else self.text
+            tk.Label(self.window, text=text, justify="left", wraplength=360,
                      bg="#11111b", fg="#f5f5f5", padx=8, pady=5).pack()
         except tk.TclError:
             self.window = None
@@ -208,6 +219,8 @@ class TranslatorApp(ctk.CTk):
         # стартовое направление применяются здесь; параметры автоперевода
         # и глобальный хоткей используются «на лету».
         self.settings = Settings()
+        configure_paths(self.settings.get("marian_en_ru_path"),
+                        self.settings.get("marian_ru_en_path"), self.settings.get("gguf_path"))
         self._pal = dict(PALETTES.get(self.settings.get("theme"), PALETTES["dark"]))
         ctk.set_appearance_mode(self.settings.get("theme"))
         self.configure(fg_color=self._pal["bg"])
@@ -379,7 +392,8 @@ class TranslatorApp(ctk.CTk):
         try:
             translator = OfflineTranslator(model_id=self._active_model_id)
         except Exception as e:
-            self._gui_queue.put(("init_error", str(e)))
+            if load_seq == self._load_seq:
+                self._gui_queue.put(("init_error", str(e)))
             return
         if load_seq != self._load_seq:
             # Во время загрузки запустили новую — этот результат не нужен.
@@ -395,13 +409,16 @@ class TranslatorApp(ctk.CTk):
 
         # Заголовок (строка 0): название приложения + справа кнопка
         # «Настройки» и приглушённое пояснение.
-        self.header_title = ctk.CTkLabel(main_frame, text="Офлайн Переводчик",
+        header = ctk.CTkFrame(main_frame, fg_color="transparent")
+        header.grid(row=0, column=0, columnspan=2, padx=10, pady=(6, 0), sticky="ew")
+        header.grid_columnconfigure(0, weight=1)
+        self.header_title = ctk.CTkLabel(header, text="Офлайн Переводчик",
                                          font=("Arial", 20, "bold"),
                                          text_color=self._pal["text"])
-        self.header_title.grid(row=0, column=0, padx=10, pady=(6, 0), sticky="w")
+        self.header_title.grid(row=0, column=0, sticky="w")
 
-        header_right = ctk.CTkFrame(main_frame, fg_color="transparent")
-        header_right.grid(row=0, column=1, padx=10, pady=(6, 0), sticky="e")
+        header_right = ctk.CTkFrame(header, fg_color="transparent")
+        header_right.grid(row=0, column=1, sticky="e")
         self.settings_btn = ctk.CTkButton(header_right, text="⚙ Настройки",
                                           command=self._open_settings,
                                           width=110, height=30, font=("Arial", 13),
@@ -409,12 +426,15 @@ class TranslatorApp(ctk.CTk):
                                           fg_color=self._pal["panel"],
                                           hover_color=self._pal["panel_hover"],
                                           text_color=self._pal["text"])
-        self.settings_btn.pack(side="left", padx=(0, 10))
+        self.settings_btn.pack(side="left")
         _Tooltip(self.settings_btn, "Открыть параметры приложения")
-        self.header_subtitle = ctk.CTkLabel(header_right, text="Английский ↔ Русский · локальная модель",
+        self.header_subtitle = ctk.CTkLabel(header, text="Английский ↔ Русский · локальная модель",
+                                            width=1, anchor="w", justify="left",
                                             font=("Arial", 12),
                                             text_color=self._pal["muted"])
-        self.header_subtitle.pack(side="left")
+        self.header_subtitle.grid(row=1, column=0, columnspan=2, sticky="ew")
+        header.bind("<Configure>", lambda event: self.header_subtitle.configure(
+            wraplength=max(100, int(event.width / header._apply_widget_scaling(1.0)))), add="+")
         _Tooltip(self.header_subtitle,
                  "Перевод выполняется локально: текст не отправляется в интернет.\n"
                  "Название активной модели отображается рядом.")
@@ -425,8 +445,8 @@ class TranslatorApp(ctk.CTk):
         # (подписи, направление, кнопки, статус) — weight=0: фиксированной
         # высоты, поэтому кнопки и панели не растягиваются. minsize страхует
         # от схлопывания полей при малом размере окна.
-        main_frame.grid_columnconfigure(0, weight=1, minsize=220)
-        main_frame.grid_columnconfigure(1, weight=1, minsize=220)
+        main_frame.grid_columnconfigure(0, weight=1, minsize=220, uniform="panes")
+        main_frame.grid_columnconfigure(1, weight=1, minsize=220, uniform="panes")
         main_frame.grid_rowconfigure(2, weight=1, minsize=150)
 
         # Поле ввода (Английский)
@@ -509,6 +529,7 @@ class TranslatorApp(ctk.CTk):
                                  fg_color=self._pal["panel_hover"], hover_color=self._pal["scrollbar_hover"],
                                  text_color=self._pal["text"])
         self.swap_btn.pack(side="left", padx=(0, 14), pady=8)
+        _Tooltip(self.swap_btn, "Меняет местами исходный текст и перевод, а также направление перевода.")
 
         # Кнопки управления (строка 4, правая часть): «Перевести» — основное
         # действие (акцентный цвет, жирный шрифт), «Копировать» и «Очистить»
@@ -525,6 +546,7 @@ class TranslatorApp(ctk.CTk):
                                            fg_color=self._pal["accent"], hover_color=self._pal["accent_hover"],
                                            text_color=self._pal["accent_text"])
         self.translate_btn.pack(side="right")
+        _Tooltip(self.translate_btn, "Перевести исходный текст (Ctrl+Enter). Доступно после загрузки модели.")
 
         self.copy_btn = ctk.CTkButton(btn_frame, text="⧉ Копировать перевод",
                                  command=self.copy_translation,
@@ -533,6 +555,7 @@ class TranslatorApp(ctk.CTk):
                                  fg_color=self._pal["panel"], hover_color=self._pal["panel_hover"],
                                  text_color=self._pal["text"])
         self.copy_btn.pack(side="right", padx=10)
+        _Tooltip(self.copy_btn, "Копировать весь перевод в буфер обмена.")
 
         self.clear_btn = ctk.CTkButton(btn_frame, text="× Очистить",
                                   command=self.clear_fields,
@@ -548,8 +571,11 @@ class TranslatorApp(ctk.CTk):
         # по ширине. Создаётся здесь (master=main_frame) — виджет Tkinter
         # нельзя перенести в другой master.
         self.status_label = ctk.CTkLabel(main_frame, text="Инициализация нейросети...",
+                                         width=1, anchor="w", justify="left",
                                          font=("Arial", 12), text_color=self._pal["pending"])
-        self.status_label.grid(row=5, column=0, columnspan=2, padx=10, pady=(0, 2), sticky="w")
+        self.status_label.grid(row=5, column=0, columnspan=2, padx=10, pady=(0, 2), sticky="ew")
+        self.status_label.bind("<Configure>", lambda event: self.status_label.configure(
+            wraplength=max(100, int(event.width / self.status_label._apply_widget_scaling(1.0)))), add="+")
 
         # Стартовое направление (из настроек): подписи полей и меню.
         self._apply_direction(self.direction)
@@ -631,7 +657,10 @@ class TranslatorApp(ctk.CTk):
         if kind == "init_done":
             # Модели загружены: перевод доступен.
             self._model_loading = False
+            self._runtime_unavailable.discard(self._active_model_id)
             self.translate_btn.configure(state="normal")
+            if self._settings_dialog is not None:
+                self._settings_dialog._refresh_model_menu()
             # Если во время загрузки текста уже ввели — запланируем автоперевод.
             if self.settings.get("autotranslate"):
                 self._schedule_autotranslate()
@@ -670,8 +699,8 @@ class TranslatorApp(ctk.CTk):
                     pass
             self._set_status(
                 "error",
-                "Не удалось загрузить модель. Проверьте настройки модели "
-                "и доступность необходимых файлов.")
+                "Не удалось загрузить модель. Откройте настройки и укажите локальную модель "
+                "или распакуйте архив моделей рядом с приложением.")
         elif kind == "translation_done":
             generation, result = message[1], message[2]
             # Результат применяем только если операция ещё актуальна;
@@ -795,9 +824,12 @@ class TranslatorApp(ctk.CTk):
         self._reset_sentence_mapping()
         # Запущенный перевод (если есть) больше не соответствует состоянию UI — помечаем его устаревшим.
         self._translation_generation += 1
+        if self._model_loading or self.translator is None:
+            # Очистка текста не меняет результат загрузки модели.
+            return
         self._set_status("ready", "Очищено. Готов к переводу.")
         self._clear_status_after = self.after(
-            2500, lambda: self._set_status("ready")
+            2500, lambda: self._set_status("ready", self._ready_status_text())
             if self._status[1] == "Очищено. Готов к переводу." else None)
 
     def change_direction(self, value: str):
@@ -1879,7 +1911,7 @@ class SettingsDialog(ctk.CTkToplevel):
         super().__init__(app)
         self.app = app
         self.title("Настройки")
-        self.geometry("560x640")
+        self.geometry("760x640")
         self.minsize(500, 480)
         self.configure(fg_color=app._pal["bg"])
         self.transient(app)
@@ -1909,11 +1941,14 @@ class SettingsDialog(ctk.CTkToplevel):
         bottom.pack(side="bottom", fill="x", padx=18, pady=(4, 14))
         bottom.grid_columnconfigure(0, weight=1)
         self.error_label = ctk.CTkLabel(bottom, text="", font=("Arial", 12),
+                                        width=1,
                                         text_color=pal["error"], anchor="w",
                                         justify="left")
-        self.error_label.grid(row=0, column=0, sticky="w")
+        self.error_label.grid(row=0, column=0, columnspan=2, sticky="ew")
+        bottom.bind("<Configure>", lambda event: self.error_label.configure(
+            wraplength=max(100, int(event.width / bottom._apply_widget_scaling(1.0)))), add="+")
         btns = ctk.CTkFrame(bottom, fg_color="transparent")
-        btns.grid(row=0, column=1, sticky="e")
+        btns.grid(row=1, column=1, sticky="e", pady=(4, 0))
         self.cancel_btn = ctk.CTkButton(btns, text="Отмена", width=110,
                                         height=36, font=("Arial", 13),
                                         corner_radius=8, fg_color=pal["panel"],
@@ -1939,7 +1974,7 @@ class SettingsDialog(ctk.CTkToplevel):
         sidebar = ctk.CTkFrame(body, fg_color=pal["panel"], corner_radius=10,
                                width=125)
         sidebar.grid(row=0, column=0, sticky="nsw", padx=(0, 12))
-        sidebar.grid_propagate(False)
+        sidebar.pack_propagate(False)
         ctk.CTkLabel(sidebar, text="Разделы", font=("Arial", 13, "bold"),
                      text_color=pal["text"]).pack(padx=10, pady=(14, 8))
 
@@ -1952,19 +1987,27 @@ class SettingsDialog(ctk.CTkToplevel):
         # Сетка «label + control»: колонка подписей — фиксированный
         # минимальный width (выравнивает все контролы), колонка контролов —
         # weight=1: поля ввода и меню растягиваются по ширине окна.
-        self._scroll_frame.grid_columnconfigure(0, weight=0, minsize=185)
+        self._scroll_frame.grid_columnconfigure(0, weight=0, minsize=160)
         self._scroll_frame.grid_columnconfigure(1, weight=1, minsize=170)
+        def resize_body(event):
+            if event.width / body._apply_widget_scaling(1.0) < 650:
+                sidebar.grid_remove()
+            else:
+                sidebar.grid()
+        body.bind("<Configure>", resize_body, add="+")
 
         row = 0
+        section_labels = {}
 
         def row_label(text):
             nonlocal row
             label = ctk.CTkLabel(self._scroll_frame, text=text,
                                 font=("Arial", 13, "bold"), text_color=pal["text"],
-                                anchor="w", wraplength=170)
+                                anchor="w", justify="left", wraplength=145)
             label.grid(
                 row=row, column=0, sticky="w", padx=(0, 12), pady=(12, 2))
             _Tooltip(label, text)
+            section_labels[text] = label
 
         def make_entry(value):
             nonlocal row
@@ -1983,14 +2026,14 @@ class SettingsDialog(ctk.CTkToplevel):
             return e
 
         def make_spinbox(value, minimum, maximum, step, nested=False):
-            """Numeric entry with Up/Down spinbox keyboard controls."""
+            """Числовое поле с кнопками и клавишами увеличения/уменьшения."""
             nonlocal row
             parent = self._scroll_frame
             if nested:
                 parent = ctk.CTkFrame(self._scroll_frame, fg_color="transparent")
                 parent.grid(row=row, column=1, sticky="ew", pady=(0, 2))
                 parent.grid_columnconfigure(0, weight=1)
-            entry = ctk.CTkEntry(parent, width=200, height=32,
+            entry = ctk.CTkEntry(parent, width=140, height=32,
                                  corner_radius=8, font=("Arial", 13),
                                  fg_color=pal["field"],
                                  border_color=pal["panel_hover"],
@@ -2011,6 +2054,16 @@ class SettingsDialog(ctk.CTkToplevel):
                 entry.insert(0, text)
             entry._entry.bind("<Up>", lambda _event: (change(step), "break")[1], add="+")
             entry._entry.bind("<Down>", lambda _event: (change(-step), "break")[1], add="+")
+            buttons = ctk.CTkFrame(parent, fg_color="transparent")
+            buttons.grid(row=0 if nested else row, column=1 if nested else 2,
+                         padx=(4, 0), sticky="e")
+            for caption, delta, tip in (("−", -step, "Уменьшить значение"),
+                                        ("+", step, "Увеличить значение")):
+                button = ctk.CTkButton(buttons, text=caption, width=28, height=32,
+                                      fg_color=pal["panel"], hover_color=pal["panel_hover"],
+                                      text_color=pal["text"], command=lambda d=delta: change(d))
+                button.pack(side="left", padx=1)
+                _Tooltip(button, tip)
             row += 1
             return entry
 
@@ -2018,7 +2071,8 @@ class SettingsDialog(ctk.CTkToplevel):
             nonlocal row
             var = ctk.StringVar(value=current)
             m = ctk.CTkOptionMenu(self._scroll_frame, variable=var,
-                                  values=values, width=240, height=32,
+                                  values=values, width=170, height=32,
+                                  dynamic_resizing=False,
                                   corner_radius=8, font=("Arial", 13),
                                   command=command, fg_color=pal["field"],
                                   button_color=pal["panel_hover"],
@@ -2029,6 +2083,7 @@ class SettingsDialog(ctk.CTkToplevel):
                                   dropdown_text_color=pal["text"])
             m.grid(row=row, column=1, sticky="ew", pady=(0, 2))
             self._make_resizable(m, min_width=170)
+            _Tooltip(m, lambda: var.get())
             # Виджет меню запоминаем для вызывающего кода (например,
             # переполнение списка моделей при смене направления).
             self._last_option_menu = m
@@ -2043,7 +2098,11 @@ class SettingsDialog(ctk.CTkToplevel):
                                fg_color=pal["panel"],
                                progress_color=pal["accent"],
                                switch_width=40, switch_height=22)
-            sw.grid(row=row, column=1, sticky="w", pady=(14, 2))
+            sw.grid(row=row, column=1, sticky="ew", pady=(14, 2))
+            sw._text_label.configure(wraplength=110, justify="left")
+            sw._bg_canvas.bind("<Configure>", lambda event: sw._text_label.configure(
+                wraplength=max(90, int(event.width / sw._apply_widget_scaling(1.0)) - 60)), add="+")
+            _Tooltip(sw, text)
             row += 1
             return var
 
@@ -2061,8 +2120,10 @@ class SettingsDialog(ctk.CTkToplevel):
                  "Светлая — выше яркость и контраст в освещённом "
                  "помещении. Применяется сразу, без перезапуска.",
             font=("Arial", 11), anchor="w", justify="left",
-            text_color=pal["muted"], wraplength=380)
+            text_color=pal["muted"], width=1, wraplength=170)
         self.theme_note_label.grid(row=row, column=1, sticky="ew", pady=(0, 2))
+        self.theme_note_label.bind("<Configure>", lambda event: self.theme_note_label.configure(
+            wraplength=max(100, int(event.width / self.theme_note_label._apply_widget_scaling(1.0)))), add="+")
         row += 1
 
         # Языки (взаимоисключающие: выбор одного меняет второе)
@@ -2086,20 +2147,57 @@ class SettingsDialog(ctk.CTkToplevel):
         self.model_menu = self._last_option_menu
         self.model_note_label = ctk.CTkLabel(
             self._scroll_frame, text="", font=("Arial", 11), anchor="w",
-            justify="left", text_color=pal["muted"], wraplength=380)
+            justify="left", text_color=pal["muted"], width=1, wraplength=170)
         self.model_note_label.grid(row=row, column=1, sticky="ew",
                                    pady=(0, 2))
+        self.model_note_label.bind("<Configure>", lambda event: self.model_note_label.configure(
+            wraplength=max(100, int(event.width / self.model_note_label._apply_widget_scaling(1.0)))), add="+")
         row += 1
         self._model_label_to_id = {}
         self._refresh_model_menu()
 
-        sections = (("Основные", 0), ("Перевод", 7), ("Хоткей", 15))
-        def jump(fraction):
+        self.model_path_entries = {}
+        for key, caption, is_file in (
+                ("marian_en_ru_path", "Локальная Marian EN → RU", False),
+                ("marian_ru_en_path", "Локальная Marian RU → EN", False),
+                ("gguf_path", "Локальный GGUF Hy-MT2", True)):
+            row_label(caption)
+            frame = ctk.CTkFrame(self._scroll_frame, fg_color="transparent")
+            frame.grid(row=row, column=1, columnspan=2, sticky="ew", pady=(0, 2))
+            frame.grid_columnconfigure(0, weight=1)
+            entry = ctk.CTkEntry(frame, width=140, height=32,
+                                fg_color=pal["field"], text_color=pal["text"],
+                                border_color=pal["panel_hover"],
+                                placeholder_text="Автоматический поиск")
+            entry.insert(0, s.get(key))
+            entry.grid(row=0, column=0, sticky="ew")
+            self.model_path_entries[key] = entry
+            def browse(field=entry, file=is_file):
+                path = (filedialog.askopenfilename(parent=self, title="Выберите GGUF Hy-MT2",
+                        filetypes=[("GGUF", "*.gguf")]) if file else
+                        filedialog.askdirectory(parent=self, title="Папка модели с config.json и весами"))
+                if path:
+                    field.delete(0, "end")
+                    field.insert(0, path)
+            button = ctk.CTkButton(frame, text="Обзор…", width=82, height=32,
+                                  fg_color=pal["panel"], hover_color=pal["panel_hover"],
+                                  text_color=pal["text"], command=browse)
+            button.grid(row=0, column=1, padx=(6, 0))
+            _Tooltip(entry, lambda field=entry: field.get() or
+                     "Пустое поле: искать модель в папке models рядом с приложением, затем в кэше.")
+            row += 1
+
+        sections = (("Основные", "Схема оформления"),
+                    ("Перевод", "Автоперевод"), ("Хоткей", "Глобальный хоткей"))
+        def jump(section):
+            self.update_idletasks()
+            label = section_labels[section]
+            fraction = label.winfo_y() / max(1, self._scroll_frame.winfo_height())
             self._scroll_frame._parent_canvas.yview_moveto(fraction)
-        for title, fraction in sections:
+        for title, section in sections:
             ctk.CTkButton(sidebar, text=title, height=30, anchor="w",
                           fg_color="transparent", hover_color=pal["panel_hover"],
-                          text_color=pal["text"], command=lambda f=fraction: jump(f)
+                          text_color=pal["text"], command=lambda s=section: jump(s)
                           ).pack(fill="x", padx=6, pady=2)
 
         # Автоперевод и тайминги
@@ -2108,14 +2206,14 @@ class SettingsDialog(ctk.CTkToplevel):
             "после остановки набора текста", s.get("autotranslate"))
 
         row_label("Задержка автоперевода, сек")
-        self.debounce_entry = make_spinbox(str(s.get("debounce_sec")), 0, 60, 0.5)
+        self.debounce_entry = make_spinbox(str(s.get("debounce_sec")), 0.1, 60, 0.5)
 
         row_label("Задержка статуса, сек")
-        self.slow_entry = make_spinbox(str(s.get("slow_after_sec")), 0, 60, 0.5)
+        self.slow_entry = make_spinbox(str(s.get("slow_after_sec")), 0, 600, 0.5)
 
         row_label("Уведомление, сек")
         self.notification_duration_entry = make_spinbox(
-            str(s.get("notification_duration_sec")), 0, 60, 1, nested=True)
+            str(s.get("notification_duration_sec")), 1, 120, 1, nested=True)
 
         row_label("Макс. длина, символов")
         self.max_len_entry = make_spinbox(str(s.get("max_text_length")), 0, 1000000, 100)
@@ -2127,8 +2225,9 @@ class SettingsDialog(ctk.CTkToplevel):
 
         row_label("Глобальный хоткей")
         hk_frame = ctk.CTkFrame(self._scroll_frame, fg_color="transparent")
-        hk_frame.grid(row=row, column=1, sticky="w", pady=(0, 2))
-        self.hotkey_entry = ctk.CTkEntry(hk_frame, width=200, height=32,
+        hk_frame.grid(row=row, column=1, columnspan=2, sticky="ew", pady=(0, 2))
+        hk_frame.grid_columnconfigure(0, weight=1)
+        self.hotkey_entry = ctk.CTkEntry(hk_frame, width=140, height=32,
                                          corner_radius=8, font=("Arial", 13),
                                          fg_color=pal["field"],
                                          border_color=pal["panel_hover"],
@@ -2136,12 +2235,12 @@ class SettingsDialog(ctk.CTkToplevel):
         self.hotkey_entry.insert(0, s.get("hotkey"))
         self.hotkey_entry._entry.bind(
             "<KeyPress>", self.app._on_physical_hotkey, add="+")
-        self.hotkey_entry.pack(side="left")
+        self.hotkey_entry.grid(row=0, column=0, sticky="ew")
         ctk.CTkButton(hk_frame, text="Записать", width=90, height=32,
                       font=("Arial", 13), corner_radius=8,
                       fg_color=pal["panel"], hover_color=pal["panel_hover"],
                       text_color=pal["text"],
-                      command=self._start_recording).pack(side="left", padx=(8, 0))
+                      command=self._start_recording).grid(row=0, column=1, padx=(8, 0))
         row += 1
 
         # Состояние глобального хоткея (backend) — последняя строка области.
@@ -2329,8 +2428,13 @@ class SettingsDialog(ctk.CTkToplevel):
                      "файлы модели и перезапустите загрузку.",
                 text_color=pal["error"])
         elif manager.is_model_available(model_id):
-            self.model_note_label.configure(text="Доступна",
-                                            text_color=pal["success"])
+            loaded = (self.app.translator is not None
+                      and not self.app._model_loading
+                      and self.app._translator_model_id == model_id)
+            self.model_note_label.configure(
+                text=("Модель загружена и готова к переводу." if loaded else
+                      "Файлы модели найдены. Готовность будет проверена при загрузке."),
+                text_color=pal["success"] if loaded else pal["muted"])
         else:
             default = manager.get_default_model(direction)
             fallback = (f" До её доступности будет использоваться "
@@ -2338,8 +2442,8 @@ class SettingsDialog(ctk.CTkToplevel):
                         if default is not None and default.id != model_id
                         else "")
             self.model_note_label.configure(
-                text="Нет локального кэша. При запуске модель будет взята "
-                     "из бандля или загружена из HuggingFace." + fallback,
+                text="Модель не найдена локально. Распакуйте архив моделей рядом с приложением "
+                     "или укажите свою совместимую модель ниже." + fallback,
                 text_color=pal["pending"])
 
     # ------------------------------------------------------------------ #
@@ -2443,6 +2547,7 @@ class SettingsDialog(ctk.CTkToplevel):
             "max_text_length": self.max_len_entry.get().strip(),
             "filter_cyrillic": bool(self.filter_var.get()),
             "hotkey": self.hotkey_entry.get().strip(),
+            **{key: field.get().strip() for key, field in self.model_path_entries.items()},
         }
         if values["source_lang"] == values["target_lang"]:
             self._show_error("Исходный язык и язык перевода должны отличаться")
@@ -2462,9 +2567,22 @@ class SettingsDialog(ctk.CTkToplevel):
                              + ", ".join(_SETTING_NAMES[k] for k in bad))
             return
         self._clear_error()
+        for key in ("marian_en_ru_path", "marian_ru_en_path", "gguf_path"):
+            path = normalized[key]
+            if path:
+                path = normalized[key] = os.path.abspath(os.path.expanduser(path))
+            if path and not (has_transformers_model(path) if key != "gguf_path" else
+                             os.path.isfile(path) and path.lower().endswith(".gguf")):
+                self._show_error("Не найдена локальная модель: " + path)
+                return
+        paths_changed = any(self.app.settings.get(key) != normalized[key]
+                            for key in self.model_path_entries)
+        load_seq = self.app._load_seq
         for key, norm in normalized.items():
             self.app.settings.set(key, norm)
         self.app.settings.save()
+        configure_paths(normalized["marian_en_ru_path"], normalized["marian_ru_en_path"],
+                        normalized["gguf_path"])
 
         # Применяем без перезапуска:
         ctk.set_appearance_mode(self.app.settings.get("theme"))
@@ -2478,8 +2596,10 @@ class SettingsDialog(ctk.CTkToplevel):
         # Бэкенды в этом месте диалога по-прежнему не импортируются:
         # загрузка модели — фоновое действие приложения.
         model_id = self._model_label_to_id.get(self.model_var.get())
-        if model_id != self.app.settings.get("model_id"):
+        if model_id != self.app.settings.get("model_id") or paths_changed:
             self.app._set_model(model_id)
+        if paths_changed and self.app._load_seq == load_seq:
+            self.app._start_model_load()
         self.app._start_hotkey_agent()
         # Честный финальный статус (Этап 14): если сохранение запустило
         # (пере)загрузку модели, «Настройки сохранены» без указания этого
