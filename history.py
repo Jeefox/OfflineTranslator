@@ -11,12 +11,16 @@ from typing import List, Tuple, Optional
 class HistoryManager:
     """Менеджер для работы с историей переводов."""
     
-    def __init__(self, db_path: str = "history.db"):
+    def __init__(self, db_path: Optional[str] = None):
         """Инициализирует менеджер истории.
         
         Args:
             db_path: Путь к файлу базы данных SQLite
         """
+        if db_path is None:
+            from dictionary_manager import user_data_dir
+            os.makedirs(user_data_dir(), exist_ok=True)
+            db_path = os.path.join(user_data_dir(), "history.db")
         self.db_path = db_path
         self._init_db()
     
@@ -64,7 +68,7 @@ class HistoryManager:
                 DELETE FROM translations 
                 WHERE id NOT IN (
                     SELECT id FROM translations 
-                    ORDER BY created_at DESC 
+                    ORDER BY created_at DESC, id DESC
                     LIMIT 49
                 )
             ''')

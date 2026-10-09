@@ -345,7 +345,7 @@ def fresh_ft(timeout=10.0):
     (direction-specific модель) — ждём завершения загрузки и возвращаем
     ТЕКУЩИЙ экземпляр (предыдущий становится «старым» и больше не
     принимает переводы)."""
-    wait_for(app, lambda: app.translator is not None, timeout)
+    wait_for(app, lambda: app.translator is not None and not app._model_loading, timeout)
     return app.translator
 
 S3 = "First sentence. Second sentence. Third sentence."

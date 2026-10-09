@@ -29,12 +29,42 @@ split_sentence_to_chunks получает счётчик токенов (count_t
 абзацы и события стрима от кэша не зависят.
 """
 import dataclasses
+from concurrent.futures import Future, TimeoutError as FutureTimeoutError
 import re
+from threading import Event, RLock
 from typing import Callable, Optional
 
 from dictionary_manager import default_dictionary_path, load_snapshot
 from sentence_pipeline import StreamUnit, assemble_output, split_units
 from translation_cache import TranslationCache
+from protected_tokens import mask_tokens, restore_tokens
+from translation_errors import (TranslationError, ModelLoadError, ModelUnavailableError,
+                                BackendError, ProtectedTokenError)
+
+
+class TranslationCancelled(Exception):
+    """Cooperative cancellation; no partial unit is cached or published."""
+
+
+class CancellationToken:
+    def __init__(self, is_cancelled=None):
+        self._event = Event()
+        self._is_cancelled = is_cancelled
+
+    def cancel(self):
+        self._event.set()
+
+    def check(self):
+        if self._event.is_set() or (self._is_cancelled and self._is_cancelled()):
+            raise TranslationCancelled()
+
+
+def _check_cancelled(token):
+    if token is not None:
+        token.check()
+
+
+
 
 
 # ---------------------------------------------------------------------- #
@@ -46,64 +76,38 @@ def split_sentence_to_chunks(sentence: str,
     """Разбивает предложение на куски, укладывающиеся в лимит токенов.
 
     Короткое предложение возвращается как есть (один кусок → один
-    inference). Сначала пробует естественные границы (, ; : — –),
-    затем по словам; все части сохраняются, порядок не меняется.
+    inference). Сборка идёт по границам слов с сохранением исходных
+    срезов; сверхдлинные слова разбиваются безопасным fallback.
 
     Args:
         sentence: логическое предложение (текст юнита);
         count_tokens: счётчик входных токенов движка (текст -> int);
         limit: безопасный лимит входных токенов движка.
     """
+    if limit < 1:
+        raise ValueError("Token limit must be positive")
+    if not sentence:
+        return []
     if count_tokens(sentence) <= limit:
         return [sentence]
-    # 1) естественные границы внутри слишком длинного «предложения»
-    parts = [p for p in re.split(r'(?<=[,;:—–])\s*', sentence) if p.strip()]
-    # 2) жадная сборка частей в куски по лимиту токенов
+    # Keep original slices: no whitespace is invented or discarded by chunking.
+    parts = re.findall(r"\S+\s*|\s+", sentence)
     chunks = []
     current = ""
     for part in parts:
-        if not current:
-            current = part
-        elif count_tokens(current + " " + part) <= limit:
-            current += " " + part
-        else:
+        if current and count_tokens(current + part) > limit:
             chunks.append(current)
-            current = part
+            current = ""
+        if count_tokens(part) > limit:
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.extend(_split_long_word(part, count_tokens, limit))
+        else:
+            current += part
     if current:
         chunks.append(current)
-    # 3) кусок всё ещё длиннее лимита — разбиваем по словам
-    result = []
-    for chunk in chunks:
-        if count_tokens(chunk) <= limit:
-            result.append(chunk)
-        else:
-            result.extend(_split_by_words(chunk, count_tokens, limit))
-    return result
-
-
-def _split_by_words(text: str, count_tokens: Callable[[str], int],
-                    limit: int) -> list:
-    """Жадная сборка слов в куски по лимиту токенов (не режет слова)."""
-    words = text.split()
-    chunks = []
-    current = []
-    for word in words:
-        if current and count_tokens(" ".join(current + [word])) > limit:
-            chunks.append(" ".join(current))
-            current = [word]
-        else:
-            current.append(word)
-    if current:
-        chunks.append(" ".join(current))
-    # 4) крайний случай: отдельное «слово» (URL, техническая строка)
-    #    длиннее лимита — разбиваем по символам, чтобы ничего не потерять
-    result = []
-    for chunk in chunks:
-        if count_tokens(chunk) <= limit:
-            result.append(chunk)
-        else:
-            result.extend(_split_long_word(chunk, count_tokens, limit))
-    return result
+    return chunks
 
 
 def _split_long_word(word: str, count_tokens: Callable[[str], int],
@@ -117,7 +121,7 @@ def _split_long_word(word: str, count_tokens: Callable[[str], int],
         while end > start + 1 and count_tokens(word[start:end]) > limit:
             end = start + (end - start) // 2
         if count_tokens(word[start:end]) > limit:
-            end = start + 1
+            raise ValueError("A single character exceeds the token limit")
         pieces.append(word[start:end])
         start = end
     return pieces
@@ -126,6 +130,21 @@ def _split_long_word(word: str, count_tokens: Callable[[str], int],
 # ---------------------------------------------------------------------- #
 #  Общий сервис перевода                                                  #
 # ---------------------------------------------------------------------- #
+@dataclasses.dataclass(frozen=True)
+class TranslationChunk:
+    text: str
+    separator_before: str = ""
+    separator_after: str = ""
+
+    @classmethod
+    def from_source(cls, source):
+        start = len(source) - len(source.lstrip())
+        end = len(source.rstrip())
+        if end <= start:
+            return cls("", source, "")
+        return cls(source[start:end], source[:start], source[end:])
+
+
 class TranslationService:
     """Общий сервис перевода поверх движко-независимого TranslationBackend.
 
@@ -145,7 +164,8 @@ class TranslationService:
     """
 
     def __init__(self, backend, dictionary_path: Optional[str] = None,
-                 snapshot_loader: Callable[[str], object] = load_snapshot):
+                 snapshot_loader: Callable[[str], object] = load_snapshot,
+                 auto_load: bool = True):
         # Движок: постоянного состояния в памяти нет — только ресурсы
         # inference (модели/токенизаторы), которые он загружает сам.
         self.backend = backend
@@ -160,7 +180,26 @@ class TranslationService:
         # перевод изменённого текста не переводит неизменённые юниты.
         self.translation_cache = TranslationCache()
 
-        backend.load()
+        self._load_lock = RLock()
+        self._flight_lock = RLock()
+        self._inference_lock = RLock()
+        self._flights = {}
+        self._loaded = False
+        if auto_load:
+            self.load()
+
+    def load(self):
+        with self._load_lock:
+            if not self._loaded:
+                try:
+                    self.backend.load()
+                except ModelLoadError:
+                    raise
+                except (FileNotFoundError, ImportError) as exc:
+                    raise ModelUnavailableError(str(exc)) from exc
+                except Exception as exc:
+                    raise ModelLoadError(str(exc)) from exc
+                self._loaded = True
 
     # ------------------------------------------------------------------ #
     #  Этап 13: идентичность модели для ключа кэша                        #
@@ -185,8 +224,8 @@ class TranslationService:
 
         Абзац — блок между пустыми строками; предложение заканчивается
         по . ! ? … и последующим пробелам/переводам строк.
-        Порядок сохраняется; теряются только пробелы (восстанавливаются
-        при сборке результата), слова и знаки не теряются.
+        Этот исторический helper возвращает только содержимое юнитов.
+        Публичный API собирает результат по исходным разделителям.
 
         Правила разбивки — sentence_pipeline.split_units: единый источник
         логических юнитов (те же юниты использует инкрементальный
@@ -204,7 +243,53 @@ class TranslationService:
             paragraphs.append(current)
         return paragraphs
 
-    def _translate_unit(self, sentence: str, direction: str) -> str:
+    def _translate_unit(self, sentence: str, direction: str, cancellation_token=None) -> str:
+        key = self.translation_cache.make_key(self.model_identity, direction, sentence)
+        while True:
+            _check_cancelled(cancellation_token)
+            with self._flight_lock:
+                cached = self.translation_cache.get(key)
+                if cached is not None:
+                    return cached
+                future = self._flights.get(key)
+                owner = future is None
+                if owner:
+                    future = self._flights[key] = Future()
+            if not owner:
+                while not future.done():
+                    _check_cancelled(cancellation_token)
+                    try:
+                        future.exception(timeout=0.05)
+                    except FutureTimeoutError:
+                        pass
+                _check_cancelled(cancellation_token)
+                try:
+                    return future.result()
+                except TranslationCancelled:
+                    # A cancelled producer must not cancel an independent consumer.
+                    _check_cancelled(cancellation_token)
+                    continue
+            acquired = False
+            try:
+                while not acquired:
+                    _check_cancelled(cancellation_token)
+                    acquired = self._inference_lock.acquire(timeout=0.05)
+                result = self._translate_unit_once(sentence, direction, cancellation_token)
+            except BaseException as exc:
+                with self._flight_lock:
+                    self._flights.pop(key, None)
+                    future.set_exception(exc)
+                raise
+            else:
+                with self._flight_lock:
+                    self._flights.pop(key, None)
+                    future.set_result(result)
+                return result
+            finally:
+                if acquired:
+                    self._inference_lock.release()
+
+    def _translate_unit_once(self, sentence: str, direction: str, cancellation_token=None) -> str:
         """Перевод одного логического юнита (предложения) — единственная
         точка обращения к бэкенду для translate() и translate_stream()
         (Этап 13).
@@ -218,15 +303,40 @@ class TranslationService:
         выполняется в translate/translate_stream до разбивки на юниты
         (dictionary.json приоритетнее нейросети).
         """
+        _check_cancelled(cancellation_token)
         key = self.translation_cache.make_key(
             self.model_identity, direction, sentence)
         cached = self.translation_cache.get(key)
         if cached is not None:
             return cached
-        chunks = self.backend.split_sentence(sentence, direction)
-        translation = " ".join(
-            self.backend.translate_chunk(chunk, direction) for chunk in chunks
-        )
+        def infer(source):
+            if not source.strip():
+                return source
+            try:
+                sources = self.backend.split_sentence(source, direction)
+                if "".join(sources) != source:
+                    raise ValueError("Backend chunking must preserve exact source slices")
+                chunks = [TranslationChunk.from_source(chunk) for chunk in sources]
+                results = []
+                for chunk in chunks:
+                    _check_cancelled(cancellation_token)
+                    translated = (self.backend.translate_chunk(chunk.text, direction).strip()
+                                  if chunk.text else "")
+                    _check_cancelled(cancellation_token)
+                    results.append(chunk.separator_before + translated + chunk.separator_after)
+                return "".join(results)
+            except TranslationCancelled:
+                raise
+            except Exception as exc:
+                raise BackendError(str(exc)) from exc
+
+        masked, mapping = mask_tokens(sentence)
+        translated = infer(masked)
+        try:
+            translation = restore_tokens(translated, mapping)
+        except ValueError as exc:
+            raise ProtectedTokenError(str(exc)) from exc
+        _check_cancelled(cancellation_token)
         self.translation_cache.put(key, translation)
         return translation
 
@@ -244,7 +354,7 @@ class TranslationService:
     # ------------------------------------------------------------------ #
     #  Публичный API                                                      #
     # ------------------------------------------------------------------ #
-    def translate(self, text: str, direction: str = "en-ru") -> str:
+    def translate(self, text: str, direction: str = "en-ru", *, cancellation_token=None) -> str:
         """Основная функция перевода.
 
         Args:
@@ -259,41 +369,10 @@ class TranslationService:
         в backend уходят только отсутствующие юниты; склейка абзацев
         и разделители от кэша не зависят.
         """
-        if not text.strip():
-            return ""
-
-        # Snapshot словаря читается ОДИН раз в начале перевода и используется
-        # во время всего translate() (включая все куски): изменение словаря
-        # в процессе текущего перевода действует только с следующего вызова.
-        snapshot = self._snapshot_loader(self.dictionary_path)
-        if snapshot is None:
-            if not self._dict_load_warned:
-                print(f"⚠ Словарь не загружен ({self.dictionary_path}), "
-                      f"используем только нейросетевой перевод")
-                self._dict_load_warned = True
-        else:
-            self._dict_load_warned = False
-
-        # Проверяем словарь (двунаправленное точное совпадение)
-        if snapshot is not None:
-            dict_result = snapshot.lookup(text)
-            if dict_result is not None:
-                return dict_result
-
-        # Используем движок (inference — у бэкенда)
-        try:
-            # Абзацы → предложения → куски, укладывающиеся в лимит входных
-            # токенов; каждый кусок переводится отдельно, порядок сохраняется
-            translated_paragraphs = [
-                self._translate_paragraph(sentences, direction)
-                for sentences in self._split_text(text)
-            ]
-            return "\n\n".join(translated_paragraphs)
-        except Exception as e:
-            return f"Ошибка перевода: {str(e)}"
+        return self.translate_stream(text, direction, cancellation_token=cancellation_token)
 
     def translate_stream(self, text: str, direction: str = "en-ru",
-                         on_sentence=None) -> str:
+                         on_sentence=None, *, cancellation_token=None) -> str:
         """Инкрементальный попредложенический перевод (тот же пайплайн,
         что и translate(), но с промежуточными результатами).
 
@@ -327,8 +406,11 @@ class TranslationService:
         Возвращает полный перевод — тот же текст, что и translate()
         для того же текста (источник истины для финального результата).
         """
+        _check_cancelled(cancellation_token)
         if not text.strip():
             return ""
+        self.load()
+        _check_cancelled(cancellation_token)
 
         # Snapshot словаря читается один раз (как в translate()).
         snapshot = self._snapshot_loader(self.dictionary_path)
@@ -345,29 +427,38 @@ class TranslationService:
         if snapshot is not None:
             dict_result = snapshot.lookup(text)
             if dict_result is not None:
+                start = len(text) - len(text.lstrip())
+                end = len(text.rstrip())
+                before, after = text[:start], text[end:]
                 if on_sentence is not None:
-                    unit = StreamUnit(src=text, src_start=0, src_end=len(text),
-                                      new_paragraph=False,
-                                      translation=dict_result)
+                    unit = StreamUnit(src=text[start:end], src_start=start, src_end=end,
+                                      new_paragraph=False, translation=dict_result,
+                                      separator_before=before, separator_after=after)
                     on_sentence("start", 0, 1, unit)
+                    _check_cancelled(cancellation_token)
                     on_sentence("done", 1, 1, unit)
-                return dict_result
+                _check_cancelled(cancellation_token)
+                return before + dict_result + after
 
         units = split_units(text)
         total = len(units)
         translations = []
         done = 0
         for u in units:
+            _check_cancelled(cancellation_token)
             if on_sentence is not None:
                 unit = StreamUnit(src=u.text, src_start=u.start,
-                                  src_end=u.end, new_paragraph=u.new_paragraph)
+                                  src_end=u.end, new_paragraph=u.new_paragraph,
+                                  separator_before=u.separator_before,
+                                  separator_after=u.separator_after)
                 on_sentence("start", done, total, unit)
             # Одно логическое предложение → один перевод предложения
             # (Этап 13): сначала in-memory кэш — при попадании backend
             # НЕ вызывается и юнит выдаётся сразу; по промаху — обычный
             # путь через backend (N технических chunks → склейка),
             # результат сохраняется в кэше.
-            translation = self._translate_unit(u.text, direction)
+            translation = self._translate_unit(u.text, direction, cancellation_token)
+            _check_cancelled(cancellation_token)
             done += 1
             if on_sentence is not None:
                 on_sentence("done", done, total,

@@ -49,21 +49,78 @@ with tempfile.TemporaryDirectory(prefix="offline-ui-review-") as config, \
             app._init_translator_worker(1)
         assert app._gui_queue.empty(), "Устаревшая ошибка загрузки попала в очередь"
 
+        text_widget = main.tk.Text(app)
+        text_widget.insert("1.0", "Hello.\nWorld.")
+        first_offsets = app._hover_cache_line_offsets(text_widget)
+        text_widget.delete("1.0", "end")
+        text_widget.insert("1.0", "Hello. World.")
+        second_offsets = app._hover_cache_line_offsets(text_widget)
+        assert first_offsets != second_offsets
+        assert second_offsets == main.line_offsets("Hello. World.")
+        assert app._hover_cache_line_offsets(text_widget) is second_offsets
+        text_widget.destroy()
+
         app.geometry("700x450")
         pump(app)
         assert abs(app.input_text.winfo_width() - app.output_text.winfo_width()) <= 1
 
+        assert app._application_icon.width() == 256
+        for button in (app.settings_btn, app.swap_btn, app.copy_btn, app.clear_btn):
+            assert button.cget("text") == ""
+            assert button.cget("image") is not None
+            assert button._canvas.cget("takefocus") == "1"
+            # Проверяем реальное событие клавиатуры, а не прямой invoke().
+            with patch.object(button, "_command") as command:
+                button._canvas.focus_force()
+                pump(app)
+                assert button.cget("border_width") == 2
+                for key in ("<Return>", "<space>"):
+                    button._canvas.event_generate(key)
+                    pump(app, .05)
+                assert command.call_count == 2
+        app.input_text.focus_set()
+        pump(app)
+        assert app.clear_btn.cget("border_width") == 0
+
         app._open_settings()
         dialog = app._settings_dialog
+        assert dialog._layout_ready
+        assert dialog.state() == "normal"
+        assert dialog._application_icon.width() == 256
+        # Tooltip is also revealed only after its complete widget tree and
+        # requested size have been prepared.
+        tooltip = main._Tooltip(app.settings_btn, "Проверка tooltip")
+        tooltip._show()
+        assert tooltip.window is not None
+        assert tooltip.window.state() == "normal"
+        tooltip._hide()
         app.settings.set("autotranslate", False)
         app.translator = object()
         app._translator_model_id = app._active_model_id
-        app._runtime_unavailable.add(app._active_model_id)
+        identity = app._model_request_identity(app._active_model_id)
+        app._translator_request_identity = identity
+        app._runtime_failures[identity] = "test failure"
         app._handle_message(("init_done",))
-        assert app._active_model_id not in app._runtime_unavailable
+        assert identity not in app._runtime_failures
         assert "ошибка загрузки" not in dialog.model_var.get()
+        # Failed persistence neither closes the dialog nor applies new settings.
+        old_settings = app.settings.as_dict()
+        dlg_status = app._status
+        dialog.theme_var.set("Светлая")
+        with patch.object(app.settings, "save", return_value=False), \
+                patch.object(dialog, "_show_error") as error, \
+                patch.object(app, "_set_direction") as direction, \
+                patch.object(app, "_set_theme") as theme:
+            dialog._on_save()
+        assert error.called and "сохранить" in error.call_args.args[0]
+        assert app.settings.as_dict() == old_settings
+        assert dialog.winfo_exists() and app._status == dlg_status
+        direction.assert_not_called()
+        theme.assert_not_called()
+        dialog.theme_var.set("Тёмная")
         for theme in ("dark", "light"):
             app._set_theme(theme)
+            assert main.ctk.get_appearance_mode().lower() == theme
             for width in (500, 560, 700, 900):
                 dialog.geometry(f"{width}x640")
                 pump(app)
@@ -108,6 +165,29 @@ with tempfile.TemporaryDirectory(prefix="offline-ui-review-") as config, \
             positions.append(dialog._scroll_frame._parent_canvas.yview()[0])
         assert positions[0] < positions[1] <= positions[2], positions
         assert positions[2] > positions[0], positions
+        dialog.geometry("500x480")
+        pump(app)
+        canvas = dialog._scroll_frame._parent_canvas
+        canvas.yview_moveto(0.0)
+        controls = (dialog.model_note_label._label, dialog.debounce_entry._entry,
+                    dialog.theme_note_label._label, dialog.save_btn._canvas)
+        for control in controls:
+            control.event_generate("<Button-5>")
+            pump(app, .02)
+        assert canvas.yview()[0] > 0.0
+        for control in controls:
+            control.event_generate("<Button-4>")
+            pump(app, .02)
+        assert canvas.yview()[0] == 0.0
+        assert dialog._scroll_bindings
+        # Closing and opening creates a fresh, fully prepared dialog without
+        # exposing an intermediate layout.
+        dialog._on_close()
+        assert not dialog._scroll_bindings
+        app._open_settings()
+        reopened = app._settings_dialog
+        assert reopened is not dialog
+        assert reopened._layout_ready and reopened.state() == "normal"
         assert not callback_errors, callback_errors
         print("OK: UI review regressions passed")
     finally:

@@ -3,13 +3,65 @@ name: Build OfflineTranslator
 on:
   push:
     tags: ['v*']
+    branches: [main]
+  pull_request:
   workflow_dispatch:
+    inputs:
+      gguf:
+        description: Build an additional Linux GGUF executable
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
 
 env:
-  PYTHON_VERSION: "3.11"
+  PYTHON_VERSION: "3.12"
 
 jobs:
+  test:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: ./.github/actions/linux-gui-prerequisites
+      - run: python -m pip install "torch==2.10.0" --index-url https://download.pytorch.org/whl/cpu
+      - run: python -m pip install -r requirements-release.txt
+      - run: xvfb-run -a python scripts/run_tests.py
+
+  build-smoke:
+    if: github.event_name == 'pull_request'
+    needs: [test]
+    name: PR build smoke (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: ./.github/actions/linux-gui-prerequisites
+        if: runner.os == 'Linux'
+      - run: python -m pip install "torch==2.10.0" --index-url https://download.pytorch.org/whl/cpu
+      - run: python -m pip install -r requirements-release.txt
+      - name: Build executable without model weights
+        run: python build.py
+      - name: Verify executable
+        shell: python
+        run: |
+          from pathlib import Path
+          import sys
+          executable = Path('dist') / ('OfflineTranslator.exe' if sys.platform == 'win32' else 'OfflineTranslator')
+          assert executable.is_file() and executable.stat().st_size > 0
+
   build:
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    needs: [test]
     name: Build (${{ matrix.platform }})
     strategy:
       fail-fast: false
@@ -23,17 +75,18 @@ jobs:
             platform: macOS
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+      - uses: ./.github/actions/linux-gui-prerequisites
+        if: runner.os == 'Linux'
       - name: Install CPU runtime
         if: runner.os != 'macOS'
-        run: python -m pip install "torch==2.6.0" --index-url https://download.pytorch.org/whl/cpu
+        run: python -m pip install "torch==2.10.0" --index-url https://download.pytorch.org/whl/cpu
       - name: Install dependencies
         run: |
-          python -m pip install -r requirements.txt pyinstaller
-          python -m pip install "llama-cpp-python>=0.3.0,<0.4"
+          python -m pip install -r requirements-release.txt
       - name: Build executable without model weights
         run: python build.py
       - name: Archive Windows executable
@@ -49,7 +102,7 @@ jobs:
           for archive in OfflineTranslator-*.zip OfflineTranslator-*.tar.gz; do
             if [ -f "$archive" ]; then python -m scripts.split_release_archive "$archive"; fi
           done
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: OfflineTranslator-${{ matrix.platform }}
           path: |
@@ -58,16 +111,42 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  gguf-build:
+    if: github.event_name == 'workflow_dispatch' && inputs.gguf
+    needs: [test]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: ./.github/actions/linux-gui-prerequisites
+      - run: python -m pip install "torch==2.10.0" --index-url https://download.pytorch.org/whl/cpu
+      - run: python -m pip install -r requirements-release.txt -r requirements-gguf.txt
+      - run: python -c "import llama_cpp; print(llama_cpp.__version__)"
+      - run: python tests/test_llama_cpp_backend.py
+      - run: python build.py
+        env:
+          OFFLINE_TRANSLATOR_BUILD_GGUF: "1"
+      - run: tar -czf OfflineTranslator-Linux-GGUF.tar.gz -C dist OfflineTranslator
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: OfflineTranslator-Linux-GGUF
+          path: OfflineTranslator-Linux-GGUF.tar.gz
+
   models:
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
     name: Package separate Marian models
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-      - name: Install download dependency
-        run: python -m pip install "huggingface-hub>=0.20,<1"
+      - name: Install CPU runtime for model conversion
+        run: python -m pip install "torch==2.10.0" --index-url https://download.pytorch.org/whl/cpu
+      - name: Install pinned model packaging dependencies
+        run: python -m pip install -r requirements-release.txt
       - name: Download and package models
         env:
           XDG_CACHE_HOME: ${{ runner.temp }}
@@ -75,7 +154,7 @@ jobs:
           python -m scripts.download_release_models
           python -m scripts.package_release_models
           python -m scripts.split_release_archive OfflineTranslator-Models-Marian.zip
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: OfflineTranslator-Models-Marian
           path: OfflineTranslator-Models-Marian.zip*
@@ -84,20 +163,20 @@ jobs:
 
   release:
     name: Publish GitHub Release
-    if: github.event_name == 'push'
-    needs: [build, models]
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test, build, models]
     runs-on: ubuntu-22.04
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: release-assets
           merge-multiple: true
       - name: Calculate checksums
         working-directory: release-assets
         run: sha256sum OfflineTranslator-* > SHA256SUMS.txt
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           tag_name: ${{ github.ref_name }}
           fail_on_unmatched_files: true

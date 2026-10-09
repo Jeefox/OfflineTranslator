@@ -13,7 +13,7 @@ overall score, рейтинга и рекомендаций; интерпрет�
 | backend | `marian` (default) | `llama_cpp` (Этап 6, POC) |
 | модель | Helsinki-NLP/opus-mt-en-ru / opus-mt-ru-en | tencent/Hy-MT2-1.8B, `Hy-MT2-1.8B-Q4_K_M.gguf` |
 | runtime | transformers (MarianMT), `model.generate` | llama-cpp-python, CPU (`n_gpu_layers=0`) |
-| settings | production (num_beams=4, max_length=512) | POC (temperature=0.0, top_p=0.6, top_k=20, repeat_penalty=1.05, n_ctx=4096) |
+| settings | production (num_beams=4, max_new_tokens до 512, в пределах decoder context) | POC (temperature=0.0, top_p=0.6, top_k=20, repeat_penalty=1.05, n_ctx=4096) |
 
 Benchmark работает поверх **существующего production API**
 (`translator.OfflineTranslator`) и **не меняет production-код**:
@@ -47,8 +47,9 @@ OFFLINE_TRANSLATOR_GGUF=/path/to/Hy-MT2-1.8B-Q4_K_M.gguf \
     python benchmarks/run_benchmark.py --backend llama_cpp
 ```
 
-Первый запуск Marian скачивает модели в `model_cache/`
-(существующий механизм кэша приложения). Каждый backend выполняется в
+Перед первым запуском Marian подготовьте safetensors-модели:
+`python -m scripts.download_release_models`. Они сохраняются в постоянный
+пользовательский кэш приложения; затем benchmark можно запускать офлайн. Каждый backend выполняется в
 **отдельном процессе**: per-backend RSS честный, сбой одного не убивает
 другой. Без `OFFLINE_TRANSLATOR_GGUF` GGUF честно помечается
 `unavailable` в отчёте.
@@ -89,7 +90,7 @@ reference ожидается строгим (только такие приме�
 ## Что измеряется
 
 - **Per sample**: success/failure (production-контракт: `translate()`
-  при ошибке возвращает «Ошибка перевода: …»), `latency_ms` (wall-time
+  при ошибке выбрасывает исключение), `latency_ms` (wall-time
   одного `translate()`), длины source/output, `source_token_count`
   (своим токенизатором бэкенда, read-only; None — если недоступно),
   `units` (split_units) и `chunks` (backend.split_sentence), structural
@@ -157,9 +158,16 @@ p95, chrF/exact match, structural checks, determinism/streaming
 - peak RSS — по всему процессу, не только модели.
 - `numbers_preserved` — сравнение digit-забега: числа, переведённые
   словами, считаются нарушением свойства (это факт, не приговор).
-- Текущий пайплайн склеивает юниты предложения пробелом, поэтому
-  `lines_preserved` на линейных вводах может легитимно «проваливаться»
-  — свойство пайплайна, зафиксировано как данные.
+- Пайплайн сохраняет исходные разделители строк; нарушения
+  `lines_preserved` теперь требуют расследования.
 - Отчёт не делает выводов «победитель» — это ограничение намеренное.
 
 exact match). LLM-судей нет.
+### Окружение после стабилизации
+
+Для нового прогона установите `requirements-release.txt` и, если нужен GGUF,
+`requirements-gguf.txt`. Они фиксируют основные версии release runtime.
+Сохранённые результаты сентября 2026 относятся к указанному в JSON окружению;
+их нельзя считать новым прогоном на release pins. Полный benchmark реальными
+моделями после изменения пайплайна нужно запускать заново; старые отчёты
+сохранены как исторические данные.

@@ -36,6 +36,15 @@ translate_chunk — все вызовы учитываются).
 import os
 import sys
 
+
+def expect_translation_error(function, *args):
+    try:
+        function(*args)
+    except (RuntimeError, ValueError) as exc:
+        return "Ошибка перевода: " + str(exc)
+    raise AssertionError("Translation must raise on failure")
+
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
@@ -287,7 +296,7 @@ check("chunks: промах — 1 split и 2 translate_chunk",
       len(backend_m.split_calls) == 1 and len(backend_m.chunk_calls) == 2,
       (backend_m.split_calls, backend_m.chunk_calls))
 check("chunks: чанки склеены",
-      out12 == "[en-ru:Hel] [en-ru:lo.]", out12)
+      out12 == "[en-ru:Hel][en-ru:lo.]", out12)
 before_split = len(backend_m.split_calls)
 before_chunk = len(backend_m.chunk_calls)
 out12b = svc_m.translate("Hello.", "en-ru")
@@ -387,11 +396,11 @@ check("plain: повтор — попадание",
 
 backend_b2 = BoomBackend()
 svc_b2 = make_service(backend_b2)
-err = svc_b2.translate("One.", "en-ru")
+err = expect_translation_error(svc_b2.translate, "One.", "en-ru")
 check("error: формат 'Ошибка перевода:'",
       err == "Ошибка перевода: boom", err)
 check("error: в кэш ничего не попало", len(svc_b2.translation_cache) == 0)
-err2 = svc_b2.translate("One.", "en-ru")
+err2 = expect_translation_error(svc_b2.translate, "One.", "en-ru")
 check("error: повтор снова идёт в backend (не кэшируется)",
       err2 == err and len(backend_b2.split_calls) == 2,
       (err2, backend_b2.split_calls))

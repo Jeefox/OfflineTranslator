@@ -114,7 +114,7 @@ check("состояние не изменилось после отклонен�
 
 # --- нормализация хоткеев --------------------------------------------------------
 check("hotkey: дружелюбный -> pynput", normalize_hotkey("Ctrl+Alt+T") == "<ctrl>+<alt>+t")
-check("hotkey: простая клавиша", normalize_hotkey("f12") == "f12")
+check("hotkey: одиночная глобальная клавиша запрещена", normalize_hotkey("f12") is None)
 check("hotkey: только модификаторы — невалидно", normalize_hotkey("ctrl+alt") is None)
 check("hotkey: пустой — невалидно", normalize_hotkey("") is None)
 check("hotkey: дублирующий мод — невалидно", normalize_hotkey("ctrl+ctrl+t") is None)
@@ -231,7 +231,7 @@ def fresh_ft(timeout=10.0):
     (direction-specific модель) — ждём завершения загрузки и возвращаем
     ТЕКУЩИЙ экземпляр (предыдущий становится «старым» и больше не
     принимает переводы)."""
-    wait_for(app, lambda: app.translator is not None, timeout)
+    wait_for(app, lambda: app.translator is not None and not app._model_loading, timeout)
     return app.translator
 
 

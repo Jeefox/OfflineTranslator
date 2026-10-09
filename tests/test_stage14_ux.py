@@ -110,6 +110,19 @@ from sentence_pipeline import (  # noqa: E402
 
 CFG_DIR = tempfile.mkdtemp(prefix="ot_stage14_cfg_")
 os.environ["OFFLINE_TRANSLATE_CONFIG"] = CFG_DIR
+# Availability fixtures must not depend on the developer's existing HF cache.
+os.environ["XDG_CACHE_HOME"] = os.path.join(CFG_DIR, "cache-root")
+from dictionary_manager import model_cache_dir
+for direction in ("en-ru", "ru-en"):
+    folder = os.path.join(model_cache_dir(), "models--Helsinki-NLP--opus-mt-" + direction,
+                          "snapshots", "fake-safe")
+    os.makedirs(folder, exist_ok=True)
+    for filename, content in (("config.json", b'{"model_type":"marian"}'),
+                              ("model.safetensors", b'weights'),
+                              ("tokenizer_config.json", b'{}'), ("vocab.json", b'{}'),
+                              ("source.spm", b'tokenizer'), ("target.spm", b'tokenizer')):
+        with open(os.path.join(folder, filename), "wb") as file:
+            file.write(content)
 # hy-mt2 по умолчанию «недоступна» (GGUF не указан) — сценарий фолбэка.
 _orig_gguf = os.environ.get(GGUF_ENV_VAR)
 os.environ.pop(GGUF_ENV_VAR, None)
@@ -234,13 +247,13 @@ main.OfflineTranslator = _orig_cls  # worker уже отработал (ошиб
 check("err: статус — понятный, без сырого исключения",
       app._status[1]
       == "Не удалось загрузить модель. Откройте настройки и укажите локальную модель "
-         "или распакуйте архив моделей рядом с приложением.", app._status)
+         "или распакуйте архив моделей рядом с приложением. Предыдущая модель сохранена и доступна для перевода.", app._status)
 for dev in ("ModuleNotFoundError", "No module named", "simulated",
             "RuntimeError", "torch"):
     check("err: в статусе нет developer-детали %r" % dev,
           dev not in app._status[1], app._status)
-check("err: после init_error кнопка ОСТАЁТСЯ отключённой",
-      app.translate_btn.cget("state") == "disabled")
+check("err: предыдущая модель остаётся доступна",
+      app.translate_btn.cget("state") == "normal" and app.translator is not None)
 # Восстановление: смена направления запускает новую загрузку.
 app.change_direction("EN → RU")
 check("err: recovery — модель перезагружена",

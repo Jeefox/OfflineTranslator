@@ -10,10 +10,10 @@
     dist/OfflineTranslator.exe            (Windows, один файл)
 
 Предварительно (см. .github/workflows/build.yml):
-    pip install torch --index-url https://download.pytorch.org/whl/cpu
-    pip install -r requirements.txt
-    pip install pyinstaller
-  (torch ставим из CPU-индекса, чтобы в бандль не попали CUDA-библиотеки.)
+    pip install "torch==2.10.0" --index-url https://download.pytorch.org/whl/cpu
+    pip install -r requirements-release.txt
+  (Linux/Windows: CPU-индекс исключает CUDA-библиотеки; на macOS
+   достаточно pip install -r requirements-release.txt.)
 
 Что попадает в бандль:
   - код приложения (main.py + модули + backends/);
@@ -22,8 +22,8 @@
     (dictionary_manager.default_dictionary_path), существующий словарь
     не перезаписывается;
   - зависимости: torch (CPU), transformers, sentencepiece, sacremoses,
-    customtkinter, pystray и Pillow; llama-cpp-python и plyer — если
-    установлены.
+    customtkinter, pystray и Pillow; plyer — если установлен.
+    llama-cpp-python — только при OFFLINE_TRANSLATOR_BUILD_GGUF=1.
 
 Чего НЕТ в бандле:
   - переводные модели: поставляются отдельным архивом с папкой models;
@@ -60,7 +60,6 @@ REQUIRED_DEPS = (
 )
 #: Опциональные зависимости: встраиваются, если установлены.
 OPTIONAL_DEPS = (
-    "llama_cpp",  # GGUF-бэкенд (llama-cpp-python)
     "plyer",      # Windows fallback для системных уведомлений
 )
 
@@ -78,7 +77,7 @@ def check_dependencies() -> list[str]:
     if missing:
         fail(
             "missing required dependencies: " + ", ".join(missing)
-            + "\n  Run: pip install -r requirements.txt pyinstaller"
+            + "\n  Run: pip install -r requirements-release.txt"
         )
     present_optional = [
         name for name in OPTIONAL_DEPS if importlib.util.find_spec(name) is not None
@@ -105,91 +104,14 @@ def clean() -> None:
             spec.unlink()
 
 
-def prepare_bundle_cache(cache_dir: Path) -> Path:
-    """Собирает минимальный HF-кэш для встраивания в PyInstaller.
-
-    Полный кэш Hugging Face содержит общие ``blobs``, несколько старых
-    snapshot-ов и служебные lock-файлы. При копировании в PyInstaller это
-    раздувает архив и на Windows может превысить лимит GitHub Release.
-    Для запуска Marian достаточно одного snapshot каждой модели в формате
-    ``models--.../snapshots/<revision>`` и ``refs/main``. Файлы snapshot-а
-    копируются по содержимому, поэтому симлинки HF не требуют отдельного
-    каталога blobs.
-    """
-    bundle_dir = BUILD_DIR / "bundle_cache"
-    if bundle_dir.exists():
-        shutil.rmtree(bundle_dir, ignore_errors=True)
-    bundle_dir.mkdir(parents=True, exist_ok=True)
-
-    required_models = (
-        "Helsinki-NLP/opus-mt-en-ru",
-        "Helsinki-NLP/opus-mt-ru-en",
-    )
-    for repo_id in required_models:
-        repo_name = "models--" + repo_id.replace("/", "--")
-        source_repo = cache_dir / repo_name
-        refs_main = source_repo / "refs" / "main"
-        revision = refs_main.read_text(encoding="utf-8").strip() \
-            if refs_main.is_file() else ""
-        source_snapshot = source_repo / "snapshots" / revision
-        if not revision or not source_snapshot.is_dir():
-            snapshots = sorted(
-                p for p in (source_repo / "snapshots").iterdir()
-                if p.is_dir()) if (source_repo / "snapshots").is_dir() else []
-            if not snapshots:
-                fail(f"no snapshot found for release model: {repo_id}")
-            source_snapshot = snapshots[-1]
-            revision = source_snapshot.name
-
-        target_repo = bundle_dir / repo_name
-        target_snapshot = target_repo / "snapshots" / revision
-        shutil.copytree(source_snapshot, target_snapshot,
-                        symlinks=False, dirs_exist_ok=True)
-        (target_repo / "refs").mkdir(parents=True, exist_ok=True)
-        (target_repo / "refs" / "main").write_text(
-            revision + "\n", encoding="utf-8")
-
-    return bundle_dir
-
-
-def prune_runtime_bundle(bundle_dir: Path) -> None:
-    """Удаляет из onedir-бандля инструменты PyTorch, не нужные приложению.
-
-    ``--collect-all torch`` необходим для надёжного обнаружения runtime
-    библиотек, но также забирает тесты, заголовки и инструменты разработки.
-    Они не участвуют в инференсе Marian и только раздувают release-архив.
-    """
-    internal = bundle_dir / "_internal"
-    torch_dir = internal / "torch"
-    if not torch_dir.is_dir():
-        return
-    removable = (
-        "include", "test", "testing", "bin", "distributed", "_inductor",
-        "_dynamo", "torchgen",
-    )
-    for name in removable:
-        path = torch_dir / name
-        if path.is_dir():
-            shutil.rmtree(path, ignore_errors=True)
-
-
 def prepare_icon() -> Path:
-    """Create a small branded Windows icon without committing a binary asset."""
-    try:
-        from PIL import Image, ImageDraw
-    except ImportError:
-        fail("Pillow is required to generate the application icon")
+    """Копирует проверенный многоразмерный ICO в каталог сборки."""
+    source = ROOT / "assets" / "offline_translator.ico"
+    if not source.is_file():
+        fail("icon is missing: run python -m scripts.generate_icons")
     path = BUILD_DIR / "offline_translator.ico"
     path.parent.mkdir(parents=True, exist_ok=True)
-    image = Image.new("RGBA", (256, 256), "#1e1e2e")
-    draw = ImageDraw.Draw(image)
-    draw.rounded_rectangle((18, 18, 238, 238), radius=42, fill="#89b4fa")
-    draw.polygon((55, 92, 142, 92, 142, 65, 205, 128, 142, 191, 142, 164,
-                  55, 164), fill="#1e1e2e")
-    draw.polygon((201, 164, 114, 164, 114, 191, 51, 128, 114, 65, 114, 92,
-                  201, 92), fill="#313244")
-    image.save(path, format="ICO", sizes=[(16, 16), (32, 32), (48, 48),
-                                          (256, 256)])
+    shutil.copy2(source, path)
     return path
 
 
@@ -209,6 +131,8 @@ def build(optional_deps: list[str]) -> None:
         # Словарь — read-only копия в корне бандля (_MEIPASS/dictionary.json).
         "--add-data",
         f"dictionary.json{sep}.",
+        "--add-data",
+        f"assets{sep}assets",
         # Данные/бинарники/сабмодули библиотек (нативные расширения, темы, .so).
         "--collect-all",
         "customtkinter",
@@ -229,8 +153,16 @@ def build(optional_deps: list[str]) -> None:
     ]
     if is_windows:
         args += ["--icon", str(prepare_icon())]
+    include_gguf = os.environ.get("OFFLINE_TRANSLATOR_BUILD_GGUF") == "1"
+    if include_gguf:
+        if importlib.util.find_spec("llama_cpp") is None:
+            fail("GGUF build requires requirements-gguf.txt")
+        args += ["--collect-all", "llama_cpp"]
+    else:
+        args += ["--exclude-module", "llama_cpp"]
     for dep in optional_deps:
-        args += ["--collect-all", dep]
+        if dep != "llama_cpp":
+            args += ["--collect-all", dep]
     args.append(ENTRY)
 
     print("Running PyInstaller ...")

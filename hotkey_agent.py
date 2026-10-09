@@ -55,11 +55,16 @@ def _read_clipboard_with(cmd: list[str]) -> str | None:
     if not shutil.which(cmd[0]):
         return None
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=2)
+        proc = subprocess.run(cmd, capture_output=True, timeout=2)
     except (OSError, subprocess.TimeoutExpired):
         return None
-    if proc.returncode == 0 and proc.stdout.strip():
-        return proc.stdout.strip()
+    if proc.returncode == 0:
+        try:
+            text = proc.stdout.decode("utf-8") if isinstance(proc.stdout, bytes) else proc.stdout
+        except UnicodeError:
+            return None
+        if text.strip():
+            return text
     return None
 
 
@@ -81,7 +86,7 @@ def _read_windows_clipboard() -> str:
         if not ptr:
             return ""
         try:
-            return ctypes.wstring_at(ptr).strip()
+            return ctypes.wstring_at(ptr)
         finally:
             kernel32.GlobalUnlock(handle)
     finally:

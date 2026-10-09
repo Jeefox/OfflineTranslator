@@ -21,6 +21,15 @@ import json
 import os
 import re
 import sys
+
+
+def expect_translation_error(function, *args):
+    try:
+        function(*args)
+    except (RuntimeError, ValueError) as exc:
+        return "Ошибка перевода: " + str(exc)
+    raise AssertionError("Translation must raise on failure")
+
 import tempfile
 import types
 
@@ -84,11 +93,7 @@ class StubBackend:
         pass
 
     def split_sentence(self, sentence, direction):
-        words = sentence.split()
-        if not words:
-            return [sentence]
-        return [" ".join(words[i:i + self.chunk_words])
-                for i in range(0, len(words), self.chunk_words)]
+        return split_sentence_to_chunks(sentence, lambda text: len(text.split()), self.chunk_words)
 
     def translate_chunk(self, chunk, direction):
         GEN_CALLS.append((direction, chunk))
@@ -174,7 +179,7 @@ class BrokenBackend(StubBackend):
 
 
 svc_broken = TranslationService(BrokenBackend(), dictionary_path=dict_path)
-r = svc_broken.translate("hello world", "en-ru")
+r = expect_translation_error(svc_broken.translate, "hello world", "en-ru")
 check("broken_translate_error_msg", r == "Ошибка перевода: boom", r)
 try:
     svc_broken.translate_stream("hello world", "en-ru")
@@ -203,7 +208,7 @@ cnt_chars = lambda s: len(s)  # noqa: E731
 big = "a" * 25 + " " + "b" * 25
 chunks_big = split_sentence_to_chunks(big, cnt_chars, 10)
 check("char_split_no_loss",
-      "".join(chunks_big) == "a" * 25 + "b" * 25, str(chunks_big))
+      "".join(chunks_big) == big, str(chunks_big))
 check("char_split_limit",
       all(len(c) <= 10 for c in chunks_big), str(chunks_big))
 
@@ -341,7 +346,7 @@ r = b.translate_chunk("hello world", "en-ru")
 check("marian_infer_echo", r == "⟪hello world⟫", r)
 check("marian_infer_model_en", GEN and GEN[0][0] == EN, str(GEN))
 check("marian_infer_kwargs",
-      GEN[0][1].get("max_length") == 512 and GEN[0][1].get("num_beams") == 4,
+      GEN[0][1].get("max_new_tokens") == 511 and "max_length" not in GEN[0][1] and GEN[0][1].get("num_beams") == 4,
       str(GEN[0][1]))
 check("marian_encode_consumed", len(ENQ) == 0, str(ENQ))
 GEN.clear()

@@ -29,6 +29,15 @@ import inspect
 import os
 import subprocess
 import sys
+
+
+def expect_translation_error(function, *args):
+    try:
+        function(*args)
+    except (RuntimeError, ValueError) as exc:
+        return "Ошибка перевода: " + str(exc)
+    raise AssertionError("Translation must raise on failure")
+
 import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -217,7 +226,13 @@ def make_hf_cache(cache_dir, repo_id):
                         "snapshots", "deadbeef")
     os.makedirs(snap)
     with open(os.path.join(snap, "config.json"), "w") as f:
-        f.write("{}")
+        f.write('{"model_type":"marian"}')
+    with open(os.path.join(snap, "model.safetensors"), "wb") as f:
+        f.write(b"weights")
+    for filename, content in (("tokenizer_config.json", b'{}'), ("vocab.json", b'{}'),
+                              ("source.spm", b'tokenizer'), ("target.spm", b'tokenizer')):
+        with open(os.path.join(snap, filename), "wb") as file:
+            file.write(content)
 
 
 mgr = ModelManager(cache_dir=TMP)  # чистая, пустая кэш-директория
@@ -378,7 +393,7 @@ if translator is not None:
     _sig = inspect.signature(translator.OfflineTranslator.__init__)
     check("facade_signature_stage9",
           list(_sig.parameters) == ["self", "cache_dir", "backend",
-                                    "gguf_path", "model_id"]
+                                    "gguf_path", "model_id", "auto_load"]
           and _sig.parameters["cache_dir"].default is None
           and _sig.parameters["backend"].default is None
           and _sig.parameters["gguf_path"].default is None
@@ -587,7 +602,7 @@ if translator is not None:
         # Direction mismatch: translate() — «Ошибка перевода: ...»
         # (Этап 14: пользовательский текст БЕЗ внутренних идентификаторов —
         # model_id/направление уходят в лог, а не в статус GUI)
-        r = t9.translate("Привет, мир.", "ru-en")
+        r = expect_translation_error(t9.translate, "Привет, мир.", "ru-en")
         check("facade9_marian_dir_mismatch_translate",
               r.startswith("Ошибка перевода:")
               and "не поддерживает выбранное направление" in r
@@ -615,7 +630,7 @@ if translator is not None:
         t9b.dictionary_path = os.path.join(TMP9, "no_dict.json")
         check("facade9_marian_ru_translate",
               t9b.translate("Привет, мир.", "ru-en") == "⟪Привет, мир.⟫")
-        r = t9b.translate("Hello world.", "en-ru")
+        r = expect_translation_error(t9b.translate, "Hello world.", "en-ru")
         check("facade9_marian_ru_dir_mismatch",
               r.startswith("Ошибка перевода:")
               and "не поддерживает выбранное направление" in r

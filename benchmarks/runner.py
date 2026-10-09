@@ -37,9 +37,8 @@ import time
 from benchmarks import dataset as bdataset
 from benchmarks import metrics as m
 
-#: Префикс, который TranslationService.translate() возвращает при
-#: ошибке бэкенда (production-контракт; translate() не бросает, а
-#: возвращает «Ошибка перевода: ...»).
+#: Legacy error-string compatibility for older/custom translators.
+#: The current service raises exceptions (handled by the runner).
 ERROR_PREFIX = "Ошибка перевода: "
 
 
@@ -231,8 +230,9 @@ def count_units_chunks(translator, direction, source):
     try:
         from sentence_pipeline import split_units
         units = split_units(source)
-        chunks = sum(len(translator.backend.split_sentence(u.text, direction))
-                     for u in units)
+        from protected_tokens import mask_tokens
+        chunks = sum(bool(chunk.strip()) for u in units
+                     for chunk in translator.backend.split_sentence(mask_tokens(u.text)[0], direction))
         return len(units), chunks
     except Exception:
         return None, None
@@ -253,18 +253,25 @@ def warmup(translator):
     return (time.perf_counter() - t0) * 1000.0
 
 
+def _benchmark_translate(translator, source, direction):
+    try:
+        return translator.translate(source, direction)
+    except Exception as exc:
+        return ERROR_PREFIX + type(exc).__name__ + ": " + str(exc)
+
+
 def run_main_pass(translator, backend_name, examples):
     """Основной warm-proгон: translate() на каждом примере dataset.
 
-    Успех определяется production-контрактом: translate() при ошибке
-    бэкенда возвращает строку с префиксом ERROR_PREFIX (не бросает).
+    Исключения API фиксируются как failed samples; ошибка одного примера
+    не обрывает измерение остальных. Legacy error strings тоже поддерживаются.
     """
     samples = []
     for ex in examples:
         direction = ex["direction"]
         source = ex["source"]
         t0 = time.perf_counter()
-        output = translator.translate(source, direction)
+        output = _benchmark_translate(translator, source, direction)
         latency_ms = (time.perf_counter() - t0) * 1000.0
         output = output if isinstance(output, str) else str(output)
         success = bool(output.strip()) and not output.startswith(ERROR_PREFIX)
@@ -311,7 +318,7 @@ def run_determinism(translator, examples, run1_samples):
         if ex["id"] not in ids:
             continue
         checked += 1
-        out2 = translator.translate(ex["source"], ex["direction"])
+        out2 = _benchmark_translate(translator, ex["source"], ex["direction"])
         first = by_id.get(ex["id"])
         if first is None or out2 != first["output"]:
             mismatches.append({
@@ -357,7 +364,7 @@ def run_streaming(translator, examples):
                 "n_events": len(events),
             })
             continue
-        reference = translator.translate(ex["source"], ex["direction"])
+        reference = _benchmark_translate(translator, ex["source"], ex["direction"])
         problems = []
         if not (final or "").strip():
             problems.append("пустой финальный вывод")

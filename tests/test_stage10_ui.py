@@ -101,7 +101,13 @@ def _fake_hf_model(cache_dir, repo_id):
                      "snapshots", "snap1")
     os.makedirs(d, exist_ok=True)
     with open(os.path.join(d, "config.json"), "w", encoding="utf-8") as f:
-        f.write("{}")
+        f.write('{"model_type":"marian"}')
+    with open(os.path.join(d, "model.safetensors"), "wb") as f:
+        f.write(b"weights")
+    for filename, content in (("tokenizer_config.json", b'{}'), ("vocab.json", b'{}'),
+                              ("source.spm", b'tokenizer'), ("target.spm", b'tokenizer')):
+        with open(os.path.join(d, filename), "wb") as file:
+            file.write(content)
 
 
 def _set_gguf_env(path_or_none):
@@ -322,7 +328,8 @@ for label, mid in labels:
               "не подходит для" in label and "доступна" not in label,
               label)
         continue
-    avail = app.model_manager.is_model_available(mid)
+    ready, failed = app._runtime_model_state(mid)
+    avail = ready or app.model_manager.is_model_available(mid)
     mark = "доступна" if avail else "недоступна локально"
     check("dlg: label %s показывает доступность" % mid, mark in label,
           label)

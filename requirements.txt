@@ -1,16 +1,15 @@
-customtkinter>=5.2.0
-transformers>=4.36.0
-# Фиксируем стабильную CPU-версию: более новые сборки заметно тяжелее и
-# раздувают автономные release-бандли сверх лимита GitHub в 2 GiB.
-torch==2.6.0
-sentencepiece>=0.1.99
-sacremoses>=0.1.1
+customtkinter==5.2.2
+transformers==5.17.0
+# Минимальная исправленная версия для GHSA-63cw-57p8-fm3p.
+torch==2.10.0
+sentencepiece==0.2.2
+sacremoses==0.2.0
 # Глобальный хоткей.
-pynput>=1.7.6
+pynput==1.8.2
 # Системный трей и уведомления.
-pystray>=0.19.5
-Pillow>=10.0
-plyer>=2.1.0
+pystray==0.19.5
+Pillow==12.3.0
+plyer==2.1.0
 
 # GGUF-бэкенд (Hy-MT2) остаётся дополнительным и не нужен для релизной
 # сборки Marian. Установка: pip install -r requirements-gguf.txt

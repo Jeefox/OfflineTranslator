@@ -25,6 +25,15 @@ import os
 import re
 import subprocess
 import sys
+
+
+def expect_translation_error(function, *args):
+    try:
+        function(*args)
+    except (RuntimeError, ValueError) as exc:
+        return "Ошибка перевода: " + str(exc)
+    raise AssertionError("Translation must raise on failure")
+
 import tempfile
 import zlib
 
@@ -331,7 +340,7 @@ check("llama_split_within_limit",
       all(len(c.split()) <= 5 for c in chunks), str(chunks))
 check("llama_split_no_loss",
       " ".join(chunks).split() == ["alpha"] * 20, str(chunks))
-check("llama_split_order", chunks[0] == " ".join(["alpha"] * 5), str(chunks))
+check("llama_split_order", chunks[0].rstrip() == " ".join(["alpha"] * 5), str(chunks))
 check("llama_split_counter_used",
       any(t for t, _ab, _sp in fake_s.tokenize_calls), str(fake_s.tokenize_calls[:2]))
 
@@ -375,13 +384,13 @@ check("svc_llama_dict_priority",
 # tests/test_stage13_translation_cache.py). Ошибки в кэш не попадают.
 svc.translation_cache.clear()
 fake7.raise_error = RuntimeError("model crash")
-r = svc.translate("Hello world.", "en-ru")
+r = expect_translation_error(svc.translate, "Hello world.", "en-ru")
 check("svc_llama_error_wrap",
       r.startswith("Ошибка перевода: model crash"), r)
 fake7.raise_error = None
 # Пустой результат inference также → «Ошибка перевода: ...»
 fake7.response = ""
-r = svc.translate("Hello world.", "en-ru")
+r = expect_translation_error(svc.translate, "Hello world.", "en-ru")
 check("svc_llama_empty_wrap", r.startswith("Ошибка перевода:"), r)
 fake7.response = "⟪translated⟫"
 

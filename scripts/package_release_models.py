@@ -15,15 +15,16 @@ def package_models(cache_dir, output):
         root = Path(cache_dir) / ("models--" + repo.replace("/", "--"))
         revision = (root / "refs" / "main").read_text(encoding="utf-8").strip()
         snapshot = root / "snapshots" / revision
-        from local_models import has_transformers_model
-        if not has_transformers_model(snapshot):
-            raise ValueError("Нет конфигурации или весов модели: " + str(snapshot))
+        from local_models import validate_transformers_model
+        validation = validate_transformers_model(snapshot)
+        if not validation.available:
+            raise ValueError("Неполная модель: " + validation.reason)
         snapshots.append((repo, snapshot))
     with ZipFile(output, "w", compression=ZIP_DEFLATED, compresslevel=6) as archive:
         for repo, snapshot in snapshots:
             direction = repo.rsplit("opus-mt-", 1)[-1]
             for file in sorted(snapshot.rglob("*")):
-                if file.is_file():
+                if file.is_file() and file.suffix.lower() not in (".bin", ".pt", ".pth", ".pkl", ".pickle"):
                     archive.write(file, "models/marian-" + direction + "/" +
                                   file.relative_to(snapshot).as_posix())
         archive.writestr("MODELS-README.txt", "Extract models/ next to OfflineTranslator executable.\n"

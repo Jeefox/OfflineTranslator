@@ -111,7 +111,7 @@ class OfflineTranslator(TranslationService):
     def __init__(self, cache_dir: Optional[str] = None,
                  backend: Optional[str] = None,
                  gguf_path: Optional[str] = None,
-                 model_id: Optional[str] = None):
+                 model_id: Optional[str] = None, auto_load: bool = True):
         if model_id is not None:
             # --- Этап 9: выбор конкретной модели через реестр ---
             if backend is not None:
@@ -149,8 +149,8 @@ class OfflineTranslator(TranslationService):
                     "OfflineTranslator: неизвестный backend %r "
                     "(доступны: 'marian', 'llama_cpp')" % (backend,))
 
-        # TranslationService.__init__ вызывает backend.load().
-        super().__init__(backend=backend_obj, snapshot_loader=_load_snapshot)
+        # TranslationService.__init__ загружает backend, если auto_load=True.
+        super().__init__(backend=backend_obj, snapshot_loader=_load_snapshot, auto_load=auto_load)
         # Совместимость с прежним API: обычные атрибуты (как до рефакторинга).
         # Источник истины — backend.max_source_tokens / backend.device
         # (заполнены после load() внутри super().__init__).
@@ -161,6 +161,17 @@ class OfflineTranslator(TranslationService):
         self.cache_manager = getattr(self.backend, "cache_manager", None)
         # Этап 9: выбранная модель (None — legacy-выбор backend=...).
         self.model_id = model_id
+        sources = []
+        paths = ([getattr(self.backend, "model_path")] if hasattr(self.backend, "model_path")
+                 else [local_path(direction) for direction in directions or ("en-ru", "ru-en")])
+        from pathlib import Path
+        for path in paths:
+            if path:
+                root = Path(path)
+                files = [root] if root.is_file() else sorted(p for p in root.glob("*") if p.is_file())
+                sources.extend((str(p.resolve()), p.stat().st_size, p.stat().st_mtime_ns)
+                               for p in files)
+        self._model_identity = (model_id, tuple(sources)) if sources else model_id
         # Направления выбранной модели (descriptor.directions) или None —
         # без ограничений (legacy: направление валидирует сам бэкенд).
         self._model_directions = directions
@@ -174,7 +185,7 @@ class OfflineTranslator(TranslationService):
         model_id из реестра (None — legacy-выбор backend=...). Включается
         в ключ кэша вместе с направлением и текстом юнита, поэтому
         результат одной модели не используется для другой."""
-        return self.model_id
+        return self._model_identity
 
     # ------------------------------------------------------------------ #
     #  Этап 9: разрешение model_id (ModelManager; без загрузки моделей)   #
@@ -263,24 +274,25 @@ class OfflineTranslator(TranslationService):
                 "Модель не поддерживает выбранное направление. "
                 "Выберите подходящую модель в «Настройках».")
 
-    def translate(self, text: str, direction: str = "en-ru") -> str:
+    def load(self):
+        super().load()
+        self.max_source_tokens = self.backend.max_source_tokens
+        self.device = self.backend.device
+
+    def translate(self, text: str, direction: str = "en-ru", *, cancellation_token=None) -> str:
         """Перевод (контракт TranslationService.translate сохранён:
-        возвращает str, ошибки — «Ошибка перевода: ...»). Перед вызовом
+        возвращает str, ошибки — исключения). Перед вызовом
         сервиса проверяется направление выбранной модели (Этап 9)."""
-        try:
-            self._check_direction(direction)
-        except ValueError as e:
-            # Тот же формат, что и для ошибок бэкенда внутри translate().
-            return "Ошибка перевода: %s" % e
-        return super().translate(text, direction)
+        self._check_direction(direction)
+        return super().translate(text, direction, cancellation_token=cancellation_token)
 
     def translate_stream(self, text: str, direction: str = "en-ru",
-                         on_sentence=None) -> str:
+                         on_sentence=None, *, cancellation_token=None) -> str:
         """Инкрементальный перевод (контракт TranslationService.
         translate_stream сохранён: исключения пробрасываются). Направление
         выбранной модели проверяется до начала обработки (Этап 9)."""
         self._check_direction(direction)
-        return super().translate_stream(text, direction, on_sentence)
+        return super().translate_stream(text, direction, on_sentence, cancellation_token=cancellation_token)
 
     # ------------------------------------------------------------------ #
     #  Исторические приватные методы (контракт регрессионных тестов)      #
