@@ -1,5 +1,44 @@
 """Shared palette, tooltips and the CustomTkinter text adapter."""
 import tkinter as tk
+import customtkinter as ctk
+
+
+class ManagedScrollableFrame(ctk.CTkScrollableFrame):
+    """Keep CTk's wheel behaviour, but own its interpreter-wide callbacks.
+
+    CTk 5.2.2 does not unregister the bind_all callbacks in destroy().
+    Tkinter's selective _unbind removes only the supplied function ID;
+    unbind_all would also remove callbacks belonging to other components.
+    """
+
+    def __init__(self, *args, **kwargs):
+        self._global_bindings = []
+        try:
+            super().__init__(*args, **kwargs)
+        except Exception:
+            # Construction can fail after CTk has registered root callbacks.
+            self._release_global_bindings()
+            raise
+
+    def bind_all(self, sequence=None, func=None, add=None):
+        funcid = super().bind_all(sequence, func, add)
+        if funcid is not None and callable(func):
+            self._global_bindings.append((sequence, funcid))
+        return funcid
+
+    def _release_global_bindings(self):
+        # bind_all registers the Tcl commands on the root, not on this frame.
+        # Remove both their script entries and commands before widget teardown.
+        bindings, self._global_bindings = self._global_bindings, []
+        if not bindings:
+            return
+        root = self._root()
+        for sequence, funcid in bindings:
+            root._unbind(("bind", "all", sequence), funcid)
+
+    def destroy(self):
+        self._release_global_bindings()
+        super().destroy()
 
 BG_COLOR = "#1e1e2e"        # фон окна
 FIELD_BG = "#2a2a3c"        # текстовые поля

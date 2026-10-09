@@ -129,6 +129,82 @@ with tempfile.TemporaryDirectory() as config, \
             app._handle_message(notification)
             show.assert_called_once()
 
+        # An agent request B queued while A is running must not let A consume
+        # B's notification request.  B remains single-flight/pending and only
+        # its own result produces the notification.
+        app.translator = old
+        app._model_loading = False
+        app._translation_generation = app._worker_generation = 20
+        app._translation_busy = True
+        app._active_text = "text A"
+        app.input_text.delete("1.0", "end")
+        app.input_text.insert("1.0", "text A")
+        started_threads = []
+
+        class DeferredThread:
+            def __init__(self, target, args=(), **_kwargs):
+                self.target = target
+                self.args = args
+
+            def start(self):
+                started_threads.append((self.target, self.args))
+
+        with patch.object(main.threading, "Thread", DeferredThread):
+            app._handle_agent_request("text B")
+            assert app._pending_text == "text B"
+            assert app._notification_text == "text B"
+            app._handle_message(("translation_done", 20, "result A"))
+            assert all(target != app._send_translation_notification
+                       for target, _args in started_threads)
+            assert app._notification_after_translation
+            assert app._active_text == "text B"
+            generation_b = app._translation_generation
+            app._handle_message(("translation_done", generation_b, "result B"))
+            notifications = [(target, args) for target, args in started_threads
+                             if target == app._send_translation_notification]
+            assert notifications == [(app._send_translation_notification,
+                                      ("result B", generation_b))]
+            assert not app._notification_after_translation
+            assert app._notification_text is None
+
+            # A standalone agent translation still notifies once, and a
+            # duplicate completion event cannot create a second notification.
+            app._translation_busy = False
+            app._active_text = None
+            app._translation_generation = app._worker_generation = 30
+            app.input_text.delete("1.0", "end")
+            app.input_text.insert("1.0", "standalone")
+            app._handle_agent_request("standalone")
+            generation_standalone = app._translation_generation
+            threads_before_repeat = len(started_threads)
+            app._handle_agent_request("standalone")
+            assert len(started_threads) == threads_before_repeat
+            assert app._pending_text is None
+            app._handle_message(("translation_done", generation_standalone,
+                                 "standalone result"))
+            notification_count = sum(
+                target == app._send_translation_notification
+                for target, _args in started_threads)
+            assert notification_count == 2
+            app._handle_message(("translation_done", generation_standalone,
+                                 "standalone result"))
+            assert sum(target == app._send_translation_notification
+                       for target, _args in started_threads) == notification_count
+
+            # A's error must not clear the notification belonging to pending B.
+            app._translation_generation = app._worker_generation = 40
+            app._translation_busy = True
+            app._active_text = "text A"
+            app._handle_agent_request("text B")
+            app._handle_message(("translation_error", 40, "expected test error"))
+            assert app._notification_after_translation
+            assert app._notification_text == app._active_text == "text B"
+            generation_b = app._translation_generation
+            app._handle_message(("translation_done", generation_b, "result B"))
+            assert started_threads[-1] == (app._send_translation_notification,
+                                           ("result B", generation_b))
+            assert not app._notification_after_translation
+
         # Agent truncation retains all whitespace inside the selected slice.
         clipboard_text = "  hello\t\r\n  tail"
         app.settings.set("max_text_length", 11)

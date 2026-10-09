@@ -236,7 +236,7 @@ python tests/test_stage14_ux.py              # пользовательские 
 
 На Windows:
 
-1. устанавливает `pyinstaller`;
+1. устанавливает CPU PyTorch и зависимости из `requirements-release.txt`;
 2. очищает старые артефакты сборки;
 3. собирает executable с зависимостями, без весов моделей.
 
@@ -244,8 +244,11 @@ python tests/test_stage14_ux.py              # пользовательские 
 build.bat
 ```
 
-Для Linux/macOS используется `python build.py`; нужны зависимости из `requirements.txt`.
-Для GGUF дополнительно установите `requirements-gguf.txt` перед сборкой.
+Для Linux/macOS используется `python build.py`; сначала установите зависимости
+из `requirements-release.txt`. На Linux установите `torch==2.10.0` из CPU-индекса
+PyTorch перед установкой этого файла, как в CI; на macOS используется обычный wheel.
+Для GGUF дополнительно установите `requirements-gguf.txt` перед сборкой
+и задайте `OFFLINE_TRANSLATOR_BUILD_GGUF=1`.
 Workflow собирает приложение для трёх ОС и отдельно скачивает и архивирует
 Marian-модели. Модели не добавляются в PyInstaller.
 

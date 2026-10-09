@@ -11,7 +11,7 @@ from input_shortcuts import _physical_key_name
 from settings import normalize_hotkey, validate_value
 from local_models import configure_paths, local_path, has_transformers_model, validate_transformers_model
 from model_registry import ModelNotFoundError
-from ui_widgets import _Tooltip, PALETTES
+from ui_widgets import _Tooltip, PALETTES, ManagedScrollableFrame
 logger = logging.getLogger("offline_translate.gui")
 
 _LANG_LABELS = {"en": "Английский", "ru": "Русский"}
@@ -142,7 +142,7 @@ class SettingsDialog(ctk.CTkToplevel):
         ctk.CTkLabel(sidebar, text="Разделы", font=("Arial", 13, "bold"),
                      text_color=pal["text"]).pack(padx=10, pady=(14, 8))
 
-        self._scroll_frame = ctk.CTkScrollableFrame(
+        self._scroll_frame = ManagedScrollableFrame(
             body, fg_color="transparent",
             scrollbar_fg_color=pal["field"],
             scrollbar_button_color=pal["scrollbar"],

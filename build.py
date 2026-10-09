@@ -10,10 +10,10 @@
     dist/OfflineTranslator.exe            (Windows, один файл)
 
 Предварительно (см. .github/workflows/build.yml):
-    pip install torch --index-url https://download.pytorch.org/whl/cpu
-    pip install -r requirements.txt
-    pip install pyinstaller
-  (torch ставим из CPU-индекса, чтобы в бандль не попали CUDA-библиотеки.)
+    pip install "torch==2.10.0" --index-url https://download.pytorch.org/whl/cpu
+    pip install -r requirements-release.txt
+  (Linux/Windows: CPU-индекс исключает CUDA-библиотеки; на macOS
+   достаточно pip install -r requirements-release.txt.)
 
 Что попадает в бандль:
   - код приложения (main.py + модули + backends/);
@@ -22,8 +22,8 @@
     (dictionary_manager.default_dictionary_path), существующий словарь
     не перезаписывается;
   - зависимости: torch (CPU), transformers, sentencepiece, sacremoses,
-    customtkinter, pystray и Pillow; llama-cpp-python и plyer — если
-    установлены.
+    customtkinter, pystray и Pillow; plyer — если установлен.
+    llama-cpp-python — только при OFFLINE_TRANSLATOR_BUILD_GGUF=1.
 
 Чего НЕТ в бандле:
   - переводные модели: поставляются отдельным архивом с папкой models;
@@ -77,7 +77,7 @@ def check_dependencies() -> list[str]:
     if missing:
         fail(
             "missing required dependencies: " + ", ".join(missing)
-            + "\n  Run: pip install -r requirements.txt pyinstaller"
+            + "\n  Run: pip install -r requirements-release.txt"
         )
     present_optional = [
         name for name in OPTIONAL_DEPS if importlib.util.find_spec(name) is not None

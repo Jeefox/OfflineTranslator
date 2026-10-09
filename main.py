@@ -198,6 +198,7 @@ class TranslatorApp(ctk.CTk):
         self._agent_error = None
         self._tray = SystemTray(self, self._show_from_tray, self._quit_app)
         self._notification_after_translation = False
+        self._notification_text = None
         self._pending_agent_text = None
 
         self.setup_ui()
@@ -723,13 +724,16 @@ class TranslatorApp(ctk.CTk):
                     if gen == self._translation_generation:
                         self._clear_highlight()
                 self.after(700, _deferred_clear)
+            completed_text = self._active_text
             self._translation_busy = False
             self._active_text = None
             self.translate_btn.configure(state="normal")
             self._set_status("ready")
             if (generation == self._translation_generation
-                    and self._notification_after_translation):
+                    and self._notification_after_translation
+                    and completed_text == self._notification_text):
                 self._notification_after_translation = False
+                self._notification_text = None
                 threading.Thread(target=self._send_translation_notification,
                                  args=(result, generation), daemon=True).start()
             # После завершения: коалесированный запрос (если текст не изменился).
@@ -745,9 +749,12 @@ class TranslatorApp(ctk.CTk):
             if generation != self._translation_generation:
                 self._release_stale_worker(generation)
                 return
+            completed_text = self._active_text
             self._translation_busy = False
             self._active_text = None
-            self._notification_after_translation = False
+            if completed_text == self._notification_text:
+                self._notification_after_translation = False
+                self._notification_text = None
             self.translate_btn.configure(state="normal")
             if generation == self._translation_generation:
                 # Операция актуальна: подсветка снимается, уже переведённые
@@ -808,6 +815,7 @@ class TranslatorApp(ctk.CTk):
         self._cancel_auto()
         self._pending_text = None
         self._notification_after_translation = False
+        self._notification_text = None
         self.input_text.delete("1.0", "end")
         self.output_text.delete("1.0", "end")
         # Поля пусты — накопленное сопоставление юнитов недействительно.
@@ -844,6 +852,7 @@ class TranslatorApp(ctk.CTk):
         self._cancel_auto()
         self._pending_text = None
         self._notification_after_translation = False
+        self._notification_text = None
 
         self.input_text.delete("1.0", "end")
         self.output_text.delete("1.0", "end")
@@ -953,6 +962,7 @@ class TranslatorApp(ctk.CTk):
         self._cancel_auto()
         self._pending_text = None
         self._notification_after_translation = False
+        self._notification_text = None
         self._translation_generation += 1
         self._reset_sentence_mapping()
         self._apply_direction(direction)
@@ -1812,6 +1822,7 @@ class TranslatorApp(ctk.CTk):
         # Переводим сразу (без debounce), а результат после завершения
         # показываем системным уведомлением — окно может оставаться в трее.
         self._notification_after_translation = True
+        self._notification_text = text
         if self.translator is None or self._model_loading:
             # Смена направления могла запустить загрузку другой модели.
             # Запрос будет выполнен после init_done.

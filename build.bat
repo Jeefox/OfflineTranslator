@@ -8,7 +8,9 @@ echo.
 echo Устанавливаем зависимости сборки...
 python -m pip install --upgrade pip
 if errorlevel 1 exit /b 1
-python -m pip install -r requirements.txt pyinstaller
+python -m pip install "torch==2.10.0" --index-url https://download.pytorch.org/whl/cpu
+if errorlevel 1 exit /b 1
+python -m pip install -r requirements-release.txt
 if errorlevel 1 exit /b 1
 echo.
 
