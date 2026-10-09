@@ -17,7 +17,17 @@ from scripts.package_release_models import package_models
 from scripts.download_release_models import MODELS
 from scripts.split_release_archive import split_archive
 
-with tempfile.TemporaryDirectory(prefix="release-models-") as temporary:
+
+def assert_model_free_bundle(args, sep):
+    # Inspect bundled files, not the interpreter/icon/output paths: CI installs
+    # Python in hostedtoolcache. Only the dictionary and UI assets may be added.
+    bundled = [args[index + 1] for index, arg in enumerate(args)
+               if arg in ("--add-data", "--add-binary")]
+    expected = [f"dictionary.json{sep}.", f"assets{sep}assets"]
+    assert sorted(bundled) == sorted(expected), repr(bundled)
+
+
+with tempfile.TemporaryDirectory(prefix="release-models-toolcache-") as temporary:
     root = Path(temporary)
     for repo in MODELS:
         folder = root / "cache" / ("models--" + repo.replace("/", "--"))
@@ -93,13 +103,16 @@ with tempfile.TemporaryDirectory(prefix="release-models-") as temporary:
         assert image.getbbox() is not None
         assert image.getpixel((0, 0))[3] == 0
     with patch.object(build, "DIST_DIR", dist), \
+            patch.object(sys, "executable", "/opt/hostedtoolcache/Python/3.12.15/x64/bin/python"), \
             patch("build.subprocess.run") as invoke:
         build.build([])
         args = invoke.call_args.args[0]
         assert "--onefile" in args
         sep = ";" if build.os.name == "nt" else ":"
         assert f"assets{sep}assets" in args
-        assert not any("cache" in str(arg) for arg in args)
+        assert args[0] == sys.executable
+        print("Legacy cache assertion rejected interpreter:", repr(args[0]))
+        assert_model_free_bundle(args, sep)
     (dist / "OfflineTranslator.exe").write_bytes(b'executable')
     with patch.object(build, "DIST_DIR", dist), \
             patch.object(build, "BUILD_DIR", root / "windows-build"), \
@@ -109,5 +122,20 @@ with tempfile.TemporaryDirectory(prefix="release-models-") as temporary:
         args = invoke.call_args.args[0]
         assert "assets;assets" in args
         assert args[args.index("--icon") + 1] == str(root / "windows-build" / "offline_translator.ico")
+        assert_model_free_bundle(args, ";")
+    # The refined assertion must still reject model-cache payloads, with either
+    # platform separator, through both PyInstaller file inclusion options.
+    for sep in (":", ";"):
+        for option in ("--add-data", "--add-binary"):
+            for source in ("cache", str(root / "cache")):
+                args = ["--add-data", f"dictionary.json{sep}.",
+                        "--add-data", f"assets{sep}assets",
+                        option, f"{source}{sep}cache"]
+                try:
+                    assert_model_free_bundle(args, sep)
+                except AssertionError:
+                    pass
+                else:
+                    raise AssertionError(f"Model cache inclusion accepted: {args!r}")
 local_models.configure_paths()
 print("OK: separate release models, offline sources and model-free build passed")
