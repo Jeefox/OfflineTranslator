@@ -23,7 +23,7 @@ def assert_model_free_bundle(args, sep):
     # Python in hostedtoolcache. Only the dictionary and UI assets may be added.
     bundled = [args[index + 1] for index, arg in enumerate(args)
                if arg in ("--add-data", "--add-binary")]
-    expected = [f"dictionary.json{sep}.", f"assets{sep}assets"]
+    expected = [f"{build.ROOT / 'dictionary.json'}{sep}.", f"{build.ROOT / 'assets'}{sep}assets"]
     assert sorted(bundled) == sorted(expected), repr(bundled)
 
 
@@ -108,8 +108,12 @@ with tempfile.TemporaryDirectory(prefix="release-models-toolcache-") as temporar
         build.build([])
         args = invoke.call_args.args[0]
         assert "--onefile" in args
+        assert "PIL._tkinter_finder" in [args[i + 1] for i, arg in enumerate(args)
+                                         if arg == "--hidden-import"]
         sep = ";" if build.os.name == "nt" else ":"
-        assert f"assets{sep}assets" in args
+        assert f"{build.ROOT / 'assets'}{sep}assets" in args
+        assert args[args.index("--distpath") + 1] == str(dist)
+        assert args[args.index("--specpath") + 1] == str(build.BUILD_DIR)
         assert args[0] == sys.executable
         print("Legacy cache assertion rejected interpreter:", repr(args[0]))
         assert_model_free_bundle(args, sep)
@@ -120,7 +124,7 @@ with tempfile.TemporaryDirectory(prefix="release-models-toolcache-") as temporar
             patch("build.subprocess.run") as invoke:
         build.build([])
         args = invoke.call_args.args[0]
-        assert "assets;assets" in args
+        assert f"{build.ROOT / 'assets'};assets" in args
         assert args[args.index("--icon") + 1] == str(root / "windows-build" / "offline_translator.ico")
         assert_model_free_bundle(args, ";")
     # The refined assertion must still reject model-cache payloads, with either
@@ -128,8 +132,8 @@ with tempfile.TemporaryDirectory(prefix="release-models-toolcache-") as temporar
     for sep in (":", ";"):
         for option in ("--add-data", "--add-binary"):
             for source in ("cache", str(root / "cache")):
-                args = ["--add-data", f"dictionary.json{sep}.",
-                        "--add-data", f"assets{sep}assets",
+                args = ["--add-data", f"{build.ROOT / 'dictionary.json'}{sep}.",
+                        "--add-data", f"{build.ROOT / 'assets'}{sep}assets",
                         option, f"{source}{sep}cache"]
                 try:
                     assert_model_free_bundle(args, sep)

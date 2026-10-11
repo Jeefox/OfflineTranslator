@@ -1,6 +1,8 @@
 """Shared palette, tooltips and the CustomTkinter text adapter."""
 import tkinter as tk
 import customtkinter as ctk
+from customtkinter.windows.widgets.appearance_mode import CTkAppearanceModeBaseClass
+from customtkinter.windows.widgets.scaling import CTkScalingBaseClass
 
 
 class ManagedScrollableFrame(ctk.CTkScrollableFrame):
@@ -18,6 +20,9 @@ class ManagedScrollableFrame(ctk.CTkScrollableFrame):
         except Exception:
             # Construction can fail after CTk has registered root callbacks.
             self._release_global_bindings()
+            parent = getattr(self, "_parent_frame", None)
+            if parent is not None:
+                parent.destroy()
             raise
 
     def bind_all(self, sequence=None, func=None, add=None):
@@ -38,7 +43,12 @@ class ManagedScrollableFrame(ctk.CTkScrollableFrame):
 
     def destroy(self):
         self._release_global_bindings()
-        super().destroy()
+        # The parent can destroy us while __init__ is only partly complete.
+        if hasattr(self, "_w"):
+            tk.Frame.destroy(self)
+        CTkAppearanceModeBaseClass.destroy(self)
+        if hasattr(self, "_CTkScalingBaseClass__scaling_type"):
+            CTkScalingBaseClass.destroy(self)
 
 BG_COLOR = "#1e1e2e"        # фон окна
 FIELD_BG = "#2a2a3c"        # текстовые поля
@@ -82,13 +92,22 @@ class _Tooltip:
             self.window.configure(bg="#11111b")
             self.window.wm_overrideredirect(True)
             text = self.text() if callable(self.text) else self.text
-            tk.Label(self.window, text=text, justify="left", wraplength=360,
+            scale = self.widget._get_widget_scaling() if hasattr(self.widget, "_get_widget_scaling") else 1
+            screen_width, screen_height = self.widget.winfo_screenwidth(), self.widget.winfo_screenheight()
+            tk.Label(self.window, text=text, justify="left",
+                     wraplength=max(1, min(round(360 * scale), screen_width - 32)),
+                     font=("Arial", -max(1, round(13 * scale))),
                      bg="#11111b", fg="#f5f5f5", padx=8, pady=5).pack()
             self.window.update_idletasks()
+            width, height = self.window.winfo_reqwidth(), self.window.winfo_reqheight()
+            x = max(0, min(x, screen_width - width))
+            if y + height > screen_height:
+                y = self.widget.winfo_rooty() - height - 5
+            y = max(0, min(y, screen_height - height))
             self.window.wm_geometry("+%d+%d" % (x, y))
             self.window.deiconify()
         except tk.TclError:
-            self.window = None
+            self._hide()
 
     def _hide(self, _event=None):
         if self.window is not None:

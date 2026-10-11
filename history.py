@@ -8,6 +8,14 @@ from datetime import datetime
 from typing import List, Tuple, Optional
 
 
+def _safe_csv_cell(value):
+    # CSV quoting does not prevent spreadsheet formula execution.
+    if isinstance(value, str) and (value.lstrip().startswith(("=", "+", "-", "@"))
+                                  or value.startswith(("\t", "\r", "\n"))):
+        return "'" + value
+    return value
+
+
 class HistoryManager:
     """Менеджер для работы с историей переводов."""
     
@@ -19,7 +27,7 @@ class HistoryManager:
         """
         if db_path is None:
             from dictionary_manager import user_data_dir
-            os.makedirs(user_data_dir(), exist_ok=True)
+            os.makedirs(user_data_dir(), exist_ok=True, mode=0o700)
             db_path = os.path.join(user_data_dir(), "history.db")
         self.db_path = db_path
         self._init_db()
@@ -180,7 +188,7 @@ class HistoryManager:
                 writer.writerow(['ID', 'Исходный текст', 'Перевод', 'Направление', 'Дата'])
                 
                 for entry in history:
-                    writer.writerow(entry)
+                    writer.writerow([_safe_csv_cell(value) for value in entry])
             
             return True
             

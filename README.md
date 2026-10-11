@@ -59,6 +59,7 @@ python -m venv .venv
 # Linux/macOS:
 source .venv/bin/activate
 
+python -m pip install -r requirements-build-tools.txt
 pip install -r requirements.txt
 ```
 
@@ -79,7 +80,7 @@ pip install -r requirements.txt
 pip install -r requirements-gguf.txt
 ```
 
-Требования глобального хоткея по платформам: **Linux (X11)** — дополнительно утилита `xclip` или `xsel` для чтения выделения; **Windows** — ничего extra. На Wayland агент может не запуститься — само приложение при этом работает как обычно (в статусе появится «Глобальный хоткей недоступен»).
+Требования глобального хоткея по платформам: **Linux (X11)** — дополнительно утилита `xclip` или `xsel` для чтения выделения; **Windows** — ничего extra; **macOS** — текст читается из буфера после копирования через системную `pbpaste`, для глобального хоткея могут потребоваться разрешения Accessibility/Input Monitoring. На Wayland агент может не запуститься — само приложение при этом работает как обычно (в статусе появится «Глобальный хоткей недоступен»).
 
 ## Запуск
 
@@ -115,9 +116,21 @@ python main.py
 
 ## Файлы и переменные окружения
 
+На Linux/macOS настройки, пользовательский словарь и история автоматически
+копируются из старого каталога `$XDG_CACHE_HOME/OfflineTranslator` в постоянный
+каталог данных. Старые файлы остаются, новые не перезаписываются. При ошибке
+миграции используется прежний каталог; кэш весов остаётся на старом месте.
+Повреждённый `settings.json` сохраняется рядом как `settings.json.corrupt-*.bak`
+до восстановления дефолтов. Если backup создать нельзя, исходный файл не перезаписывается.
+
+В настройках можно отключить «Системные уведомления», чтобы перевод не появлялся
+в уведомлениях ОС. Результат скрытого agent-перевода тогда открывается в приложении.
+CSV-экспорт истории экранирует потенциальные формулы добавлением апострофа;
+исходный текст в SQLite не изменяется.
+
 | Данные | Windows | Linux/macOS |
 | --- | --- | --- |
-| Настройки (`settings.json`) | `%LOCALAPPDATA%\OfflineTranslator\settings.json` | `$XDG_CACHE_HOME/OfflineTranslator/settings.json` (по умолчанию `~/.cache/OfflineTranslator/settings.json`) |
+| Настройки (`settings.json`) | `%LOCALAPPDATA%\OfflineTranslator\settings.json` | Linux: `$XDG_DATA_HOME/OfflineTranslator/settings.json` (по умолчанию `~/.local/share`); macOS: `~/Library/Application Support/OfflineTranslator/settings.json` |
 | Кэш Marian-моделей (структура HuggingFace) | `%LOCALAPPDATA%\OfflineTranslator\cache` | `$XDG_CACHE_HOME/OfflineTranslator/cache` |
 | Словарь в EXE-режиме | `%LOCALAPPDATA%\OfflineTranslator\dictionary.json` | user-директория (при первом запуске копируется из бандла, существующий словарь не перезаписывается) |
 
@@ -227,7 +240,47 @@ python tests/test_stage14_ux.py              # пользовательские 
 # test_settings_autotranslate.py, test_long_text.py, test_llama_cpp_backend.py
 ```
 
-Сьюты используют заглушки/fake-бэкенды и не требуют реальных моделей, GPU или интернета. `smoke_gguf.py` — живой smoke-тест GGUF-пути; без локальной GGUF-модели он пропускается.
+Большинство сьютов используют заглушки/fake-бэкенды. `test_safe_models.py`
+выполняет настоящий Marian inference на tiny-модели со случайными весами;
+полные модели, GPU и интернет не нужны. `smoke_gguf.py` — живой smoke-тест
+GGUF-пути; без локальной GGUF-модели он пропускается.
+
+После сборки проверьте запуск самого executable:
+
+```bash
+# Linux (в CI и без дисплея)
+xvfb-run -a python scripts/check_executable.py dist/OfflineTranslator
+# Windows
+python scripts/check_executable.py dist/OfflineTranslator.exe
+# macOS
+python scripts/check_executable.py dist/OfflineTranslator
+```
+
+Проверка запускает настоящий GUI, настройки и tooltip в изолированном
+каталоге без загрузки моделей, tray и глобальных хоткеев. Она проверяет
+пакетные импорты Marian, но не заменяет перевод с настоящими моделями.
+При ошибке процесса, таймауте или отсутствии успешного JSON-отчёта проверка падает,
+включая Windows-сборку без консоли.
+
+Для реального Marian inference подготовьте каталог с двумя полными моделями
+в подкаталогах `en-ru/` и `ru-en/` (safetensors и файлы токенизатора).
+Linux-проверка с физически изолированной сетью:
+
+```bash
+xvfb-run -a unshare --user --map-root-user --net \
+  dist/OfflineTranslator --translation-smoke /tmp/translation-report.json /absolute/path/to/model-root
+```
+
+Если система запрещает user/network namespaces, блокировку сети обеспечьте
+средствами ОС. Режим переводит по два предложения в обоих направлениях через
+GUI workers и сохраняет результат в JSON. Он использует отдельный временный
+каталог настроек; tray и глобальные хоткеи отключены. Отсутствующие веса,
+ошибка загрузки/перевода или таймаут дают ненулевой exit code.
+
+Release jobs также сохраняют CycloneDX SBOM окружения сборки, `.resolved.txt`
+с установленными версиями и `.build-environment.json` с Python/ОС/архитектурой.
+Они включают инструменты сборки и исключённые из бинарника пакеты;
+это не точная опись содержимого executable и не входной lock-файл.
 
 ## Сборка автономного приложения
 
@@ -245,7 +298,9 @@ build.bat
 ```
 
 Для Linux/macOS используется `python build.py`; сначала установите зависимости
-из `requirements-release.txt`. На Linux установите `torch==2.10.0` из CPU-индекса
+из `requirements-release.txt`. Сначала обновите инструменты через
+`python -m pip install -r requirements-build-tools.txt`.
+На Linux установите `torch==2.13.0` из CPU-индекса
 PyTorch перед установкой этого файла, как в CI; на macOS используется обычный wheel.
 Для GGUF дополнительно установите `requirements-gguf.txt` перед сборкой
 и задайте `OFFLINE_TRANSLATOR_BUILD_GGUF=1`.
@@ -299,6 +354,10 @@ git pull origin main
 git tag v1.0.0
 git push origin v1.0.0
 ```
+
+Подробная инструкция установки приложения, скачивания моделей, проверки
+контрольных сумм и подключения Marian/GGUF автоматически добавляется в описание
+GitHub Release из [.github/RELEASE_GUIDE.md](.github/RELEASE_GUIDE.md).
 
 В релизе появятся архивы:
 
@@ -365,7 +424,7 @@ translator.load()
 История и блокировка единственного экземпляра хранятся в пользовательской папке.
 
 CI выполняет все standalone-наборы на push в main и pull request через Xvfb;
-на PR также выполняется сборка smoke-executable для Windows и Linux.
+на PR также выполняются сборка и GUI smoke-запуск executable для Windows и Linux.
 Сборка релиза зависит от успеха тестов. Локальный запуск:
 
 ```bash
@@ -385,7 +444,7 @@ xvfb-run -a .venv/bin/python scripts/run_tests.py
 Файлы `pytorch_model.bin`, `.pt` и `.pth` не используются при переводе.
 Загрузка модели и токенизатора выполняется с `trust_remote_code=False`;
 загрузка весов — с `use_safetensors=True`. Минимальный runtime закреплён
-на PyTorch 2.10.0 (исправление GHSA-63cw-57p8-fm3p).
+на PyTorch 2.13.0 (исправления GHSA-63cw-57p8-fm3p и GHSA-rrmf-rvhw-rf47).
 
 Стандартные Helsinki-репозитории пока публикуют pickle-веса. Поэтому
 `python -m scripts.download_release_models` — отдельный сборочный шаг:
@@ -395,6 +454,9 @@ PyTorch, преобразует веса с `weights_only=True` в safetensors �
 пользовательских `.bin`. Старые архивы моделей нужно заменить safetensors-архивом.
 Для первого запуска исходников рекомендуется заранее выполнить этот шаг,
 затем запустить приложение с `OFFLINE_TRANSLATOR_OFFLINE=1`.
+
+Проверка транзитивных зависимостей и известное исключение `diskcache`
+для дополнительного GGUF runtime описаны в [SECURITY.md](SECURITY.md).
 
 Проверка доступности Marian едина для настроек, реестра, загрузчика и архивов:
 нужны `config.json` с типом `marian`, `tokenizer_config.json`, `vocab.json`,

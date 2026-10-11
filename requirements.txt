@@ -1,7 +1,9 @@
 customtkinter==5.2.2
 transformers==5.17.0
-# Минимальная исправленная версия для GHSA-63cw-57p8-fm3p.
-torch==2.10.0
+# Исправления GHSA-63cw-57p8-fm3p и GHSA-rrmf-rvhw-rf47.
+torch==2.13.0
+# Torch depends on setuptools; avoid resolving vulnerable older versions.
+setuptools==84.0.0
 sentencepiece==0.2.2
 sacremoses==0.2.0
 # Глобальный хоткей.

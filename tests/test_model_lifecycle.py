@@ -205,6 +205,31 @@ with tempfile.TemporaryDirectory() as config, \
                                            ("result B", generation_b))
             assert not app._notification_after_translation
 
+        # Clear while a model is loading must cancel the deferred agent, even
+        # if the user types different text before the load completes.
+        app.settings.set("autotranslate", False)
+        app.settings.set("filter_cyrillic", False)
+        app._translation_busy = False
+        app._model_loading = True
+        app._handle_agent_request("waiting agent")
+        assert app._pending_agent_text == "waiting agent"
+        app.clear_fields()
+        app.input_text.insert("1.0", "manually typed replacement")
+        with patch.object(app, "_start_translation_internal") as start:
+            app._handle_message(("init_done",))
+        start.assert_not_called()
+        assert app._pending_agent_text is None
+        assert not app._notification_after_translation
+        assert app._notification_text is None
+
+        # An uncancelled deferred request still starts when loading finishes.
+        app._model_loading = True
+        app._handle_agent_request("waiting agent")
+        with patch.object(app, "_start_translation_internal") as start:
+            app._handle_message(("init_done",))
+        start.assert_called_once_with("agent")
+        assert app._notification_text == "waiting agent"
+
         # Agent truncation retains all whitespace inside the selected slice.
         clipboard_text = "  hello\t\r\n  tail"
         app.settings.set("max_text_length", 11)

@@ -1,0 +1,3 @@
+# Patched build/install tools, shared by local builds and CI.
+pip==26.2.1
+setuptools==84.0.0

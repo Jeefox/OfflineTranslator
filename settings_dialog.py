@@ -33,6 +33,7 @@ _SETTING_NAMES = {
     "autotranslate": "автоперевод",
     "slow_after_sec": "задержка статуса «Перевод...»",
     "notification_duration_sec": "время жизни уведомления",
+    "notifications_enabled": "системные уведомления",
     "debounce_sec": "задержка автоперевода",
     "max_text_length": "макс. длина текста",
     "filter_cyrillic": "фильтр кириллицы",
@@ -50,6 +51,13 @@ _HK_IGNORE_KEYS = {
     "Caps_Lock", "Num_Lock", "Scroll_Lock", "Mode_switch",
     "ISO_Level3_Shift", "ISO_Left_Tab",
 }
+
+
+def _set_wraplength(label, width):
+    # Configure events can be re-entered by CTk's scrollbar idle redraw.
+    # Avoid requesting another layout for an unchanged wrap length.
+    if int(float(label.cget("wraplength"))) != width:
+        label.configure(wraplength=width)
 
 
 class SettingsDialog(ctk.CTkToplevel):
@@ -71,8 +79,11 @@ class SettingsDialog(ctk.CTkToplevel):
         self.app = app
         self.title("Настройки")
         app._set_window_icon(self)
-        self.geometry("760x640")
-        self.minsize(500, 480)
+        scale = self._get_window_scaling()
+        width = min(760, max(1, int((self.winfo_screenwidth() - 32) / scale)))
+        height = min(640, max(1, int((self.winfo_screenheight() - 80) / scale)))
+        self.geometry(f"{width}x{height}")
+        self.minsize(min(500, width), min(480, height))
         self.configure(fg_color=app._pal["bg"])
         self.transient(app)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -87,12 +98,51 @@ class SettingsDialog(ctk.CTkToplevel):
         self._syncing = False
 
         self._build_ui()
+        self._responsive_items = [(widget, dict(widget.grid_info()))
+                                  for widget in self._scroll_frame.winfo_children()
+                                  if widget.grid_info()]
+        self._content_stacked = None
+        self._scroll_frame._parent_canvas.bind(
+            "<Configure>", lambda event: self._update_content_layout(event.width), add="+")
+        self.update_idletasks()
+        # Geometry sizes are logical CTk units; positions remain screen pixels.
+        pixel_width, pixel_height = round(width * scale), round(height * scale)
+        x = app.winfo_rootx() + (app.winfo_width() - pixel_width) // 2
+        y = app.winfo_rooty() + (app.winfo_height() - pixel_height) // 2
+        x = max(8, min(x, self.winfo_screenwidth() - pixel_width - 8))
+        y = max(24, min(y, self.winfo_screenheight() - pixel_height - 40))
+        self.geometry(f"{width}x{height}+{x}+{y}")
         self.update_idletasks()
         self._bind_scroll_events()
         self._layout_ready = True
         self.deiconify()
 
     # ------------------------------------------------------------------ #
+    def _update_content_layout(self, width):
+        scale = self._scroll_frame._get_widget_scaling()
+        stacked = width / scale < 460
+        if stacked == self._content_stacked:
+            return
+        self._content_stacked = stacked
+        rows_with_buttons = {int(info["row"]) for _widget, info in self._responsive_items
+                             if int(info["column"]) == 2}
+        for widget, info in self._responsive_items:
+            row, column = int(info["row"]), int(info["column"])
+            if stacked:
+                label = column == 0
+                tk.Grid.grid_configure(
+                    widget, row=row * 2 + (0 if label else 1),
+                    column=0 if column < 2 else 1,
+                    columnspan=2 if label or (column == 1 and row not in rows_with_buttons) else 1,
+                    sticky="ew" if column < 2 else "e")
+            else:
+                tk.Grid.grid_configure(widget, row=row, column=column,
+                                       columnspan=info["columnspan"], sticky=info["sticky"])
+        self._scroll_frame.grid_columnconfigure(0, weight=1 if stacked else 0,
+                                                minsize=0 if stacked else round(145 * scale))
+        self._scroll_frame.grid_columnconfigure(1, weight=0 if stacked else 1,
+                                                minsize=0 if stacked else round(170 * scale))
+
     def _build_ui(self):
         pal = self.app._pal
         s = self.app.settings
@@ -109,8 +159,8 @@ class SettingsDialog(ctk.CTkToplevel):
                                         text_color=pal["error"], anchor="w",
                                         justify="left")
         self.error_label.grid(row=0, column=0, columnspan=2, sticky="ew")
-        bottom.bind("<Configure>", lambda event: self.error_label.configure(
-            wraplength=max(100, int(event.width / bottom._apply_widget_scaling(1.0)))), add="+")
+        bottom.bind("<Configure>", lambda event: _set_wraplength(self.error_label,
+            max(100, int(event.width / bottom._apply_widget_scaling(1.0)))), add="+")
         btns = ctk.CTkFrame(bottom, fg_color="transparent")
         btns.grid(row=1, column=1, sticky="e", pady=(4, 0))
         self.cancel_btn = ctk.CTkButton(btns, text="Отмена", width=110,
@@ -151,7 +201,7 @@ class SettingsDialog(ctk.CTkToplevel):
         # Сетка «label + control»: колонка подписей — фиксированный
         # минимальный width (выравнивает все контролы), колонка контролов —
         # weight=1: поля ввода и меню растягиваются по ширине окна.
-        self._scroll_frame.grid_columnconfigure(0, weight=0, minsize=160)
+        self._scroll_frame.grid_columnconfigure(0, weight=0, minsize=145)
         self._scroll_frame.grid_columnconfigure(1, weight=1, minsize=170)
         def resize_body(event):
             if event.width / body._apply_widget_scaling(1.0) < 650:
@@ -167,7 +217,7 @@ class SettingsDialog(ctk.CTkToplevel):
             nonlocal row
             label = ctk.CTkLabel(self._scroll_frame, text=text,
                                 font=("Arial", 13, "bold"), text_color=pal["text"],
-                                anchor="w", justify="left", wraplength=145)
+                                anchor="w", justify="left", wraplength=130)
             label.grid(
                 row=row, column=0, sticky="w", padx=(0, 12), pady=(12, 2))
             _Tooltip(label, text)
@@ -185,7 +235,6 @@ class SettingsDialog(ctk.CTkToplevel):
             e.grid(row=row, column=1, sticky="ew", pady=(0, 2))
             e._entry.bind("<KeyPress>", self.app._on_physical_hotkey,
                           add="+")
-            self._make_resizable(e, min_width=140)
             row += 1
             return e
 
@@ -206,7 +255,6 @@ class SettingsDialog(ctk.CTkToplevel):
             entry.grid(row=0 if nested else row, column=0 if nested else 1,
                        sticky="ew", pady=(0, 2) if not nested else 0)
             entry._entry.bind("<KeyPress>", self.app._on_physical_hotkey, add="+")
-            self._make_resizable(entry, min_width=140)
             def change(delta):
                 try:
                     current = float(entry.get().replace(",", "."))
@@ -246,7 +294,6 @@ class SettingsDialog(ctk.CTkToplevel):
                                   dropdown_hover_color=pal["panel_hover"],
                                   dropdown_text_color=pal["text"])
             m.grid(row=row, column=1, sticky="ew", pady=(0, 2))
-            self._make_resizable(m, min_width=170)
             _Tooltip(m, lambda: var.get())
             # Виджет меню запоминаем для вызывающего кода (например,
             # переполнение списка моделей при смене направления).
@@ -264,8 +311,8 @@ class SettingsDialog(ctk.CTkToplevel):
                                switch_width=40, switch_height=22)
             sw.grid(row=row, column=1, sticky="ew", pady=(14, 2))
             sw._text_label.configure(wraplength=110, justify="left")
-            sw._bg_canvas.bind("<Configure>", lambda event: sw._text_label.configure(
-                wraplength=max(90, int(event.width / sw._apply_widget_scaling(1.0)) - 60)), add="+")
+            sw._bg_canvas.bind("<Configure>", lambda event: _set_wraplength(sw._text_label,
+                max(round(90 * sw._get_widget_scaling()), event.width - round(60 * sw._get_widget_scaling()))), add="+")
             _Tooltip(sw, text)
             row += 1
             return var
@@ -286,8 +333,10 @@ class SettingsDialog(ctk.CTkToplevel):
             font=("Arial", 11), anchor="w", justify="left",
             text_color=pal["muted"], width=1, wraplength=170)
         self.theme_note_label.grid(row=row, column=1, sticky="ew", pady=(0, 2))
-        self.theme_note_label.bind("<Configure>", lambda event: self.theme_note_label.configure(
-            wraplength=max(100, int(event.width / self.theme_note_label._apply_widget_scaling(1.0)))), add="+")
+        # CTkLabel.bind forwards to the inner text label. Its width depends
+        # on wraplength; use the outer grid allocation to avoid feedback loops.
+        tk.Misc.bind(self.theme_note_label, "<Configure>", lambda event: _set_wraplength(self.theme_note_label,
+            max(100, int(event.width / self.theme_note_label._apply_widget_scaling(1.0)))), add="+")
         row += 1
 
         # Языки (взаимоисключающие: выбор одного меняет второе)
@@ -309,13 +358,20 @@ class SettingsDialog(ctk.CTkToplevel):
         row_label("Модель")
         self.model_var = make_option([], "", self._on_model_selected)
         self.model_menu = self._last_option_menu
+        self.model_name_label = ctk.CTkLabel(
+            self._scroll_frame, text="", font=("Arial", 12), anchor="w",
+            justify="left", text_color=pal["text"], width=1, wraplength=170)
+        self.model_name_label.grid(row=row, column=1, sticky="ew", pady=(0, 2))
+        tk.Misc.bind(self.model_name_label, "<Configure>", lambda event: _set_wraplength(self.model_name_label,
+            max(80, int(event.width / self.model_name_label._apply_widget_scaling(1.0)))), add="+")
+        row += 1
         self.model_note_label = ctk.CTkLabel(
             self._scroll_frame, text="", font=("Arial", 11), anchor="w",
             justify="left", text_color=pal["muted"], width=1, wraplength=170)
         self.model_note_label.grid(row=row, column=1, sticky="ew",
                                    pady=(0, 2))
-        self.model_note_label.bind("<Configure>", lambda event: self.model_note_label.configure(
-            wraplength=max(100, int(event.width / self.model_note_label._apply_widget_scaling(1.0)))), add="+")
+        tk.Misc.bind(self.model_note_label, "<Configure>", lambda event: _set_wraplength(self.model_note_label,
+            max(100, int(event.width / self.model_note_label._apply_widget_scaling(1.0)))), add="+")
         row += 1
         self._model_label_to_id = {}
         self._refresh_model_menu()
@@ -379,6 +435,10 @@ class SettingsDialog(ctk.CTkToplevel):
         self.notification_duration_entry = make_spinbox(
             str(s.get("notification_duration_sec")), 1, 120, 1, nested=True)
 
+        row_label("Системные уведомления")
+        self.notifications_var = make_switch(
+            "показывать текст перевода", s.get("notifications_enabled"))
+
         row_label("Макс. длина, символов")
         self.max_len_entry = make_spinbox(str(s.get("max_text_length")), 0, 1000000, 100)
 
@@ -416,24 +476,8 @@ class SettingsDialog(ctk.CTkToplevel):
         row += 1
         self._update_agent_state()
 
-    def _make_resizable(self, widget, min_width):
-        """CTkEntry/CTkOptionMenu в grid-колонке с weight=1: растягивать
-        контрол по ширине вместе с окном.
-
-        Без этого canvas CTk-контрола перерисовывает рамку в начальном
-        размере (встроенной перерисовки по <Configure> у этих виджетов
-        нет): при изменении ширины колонки canvas отрисовываем заново
-        с новой шириной. min_width — минимальная ширина контрола.
-        """
-        scale = widget._apply_widget_scaling(1.0) or 1.0
-        def on_configure(event):
-            w = int(event.width / scale)
-            if w >= min_width and abs(w - widget._desired_width) > 3:
-                widget.configure(width=w)
-        widget._canvas.bind("<Configure>", on_configure, add="+")
-
     def _bind_scroll_events(self):
-        """Add Linux wheel events at the dialog level.
+        """Add Linux wheel events once per underlying Tk widget.
 
         CustomTkinter's scrollable frame already handles ``<MouseWheel>``
         through its own scoped ``bind_all`` callback.  Tk on Linux reports a
@@ -447,9 +491,15 @@ class SettingsDialog(ctk.CTkToplevel):
             widget = widgets.pop()
             widgets.extend(widget.winfo_children())
             for sequence, units in (("<Button-4>", -3), ("<Button-5>", 3)):
-                funcid = widget.bind(sequence,
-                                     lambda _event, step=units: self._scroll_by(step),
-                                     add="+")
+                # CTk bind() forwards to internal labels/canvases, which the
+                # traversal also visits. Use the actual Tk path to avoid two
+                # callbacks for one event. Preserve controls' own wheel logic.
+                if (tk.Misc.bind(widget, sequence)
+                        or widget.bind_class(widget.winfo_class(), sequence)):
+                    continue
+                funcid = tk.Misc.bind(
+                    widget, sequence,
+                    lambda _event, step=units: self._scroll_by(step), add="+")
                 self._scroll_bindings.append((widget, sequence, funcid))
 
     def _scroll_by(self, units):
@@ -460,7 +510,7 @@ class SettingsDialog(ctk.CTkToplevel):
     def _unbind_scroll_events(self):
         for widget, sequence, funcid in getattr(self, "_scroll_bindings", ()):
             try:
-                widget.unbind(sequence, funcid)
+                tk.Misc.unbind(widget, sequence, funcid)
             except tk.TclError:
                 pass
         self._scroll_bindings = ()
@@ -616,6 +666,7 @@ class SettingsDialog(ctk.CTkToplevel):
         pal = self.app._pal
         manager = self.app.model_manager
         label = self.model_var.get()
+        self.model_name_label.configure(text=label)
         model_id = self._model_label_to_id.get(label)
         if not model_id:
             self.model_note_label.configure(text="Модель не выбрана",
@@ -758,6 +809,7 @@ class SettingsDialog(ctk.CTkToplevel):
             "slow_after_sec": self.slow_entry.get().strip().replace(",", "."),
             "notification_duration_sec": (
                 self.notification_duration_entry.get().strip().replace(",", ".")),
+            "notifications_enabled": bool(self.notifications_var.get()),
             "max_text_length": self.max_len_entry.get().strip(),
             "filter_cyrillic": bool(self.filter_var.get()),
             "hotkey": self.hotkey_entry.get().strip(),

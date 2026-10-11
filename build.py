@@ -10,7 +10,8 @@
     dist/OfflineTranslator.exe            (Windows, один файл)
 
 Предварительно (см. .github/workflows/build.yml):
-    pip install "torch==2.10.0" --index-url https://download.pytorch.org/whl/cpu
+    pip install -r requirements-build-tools.txt
+    pip install "torch==2.13.0" --index-url https://download.pytorch.org/whl/cpu
     pip install -r requirements-release.txt
   (Linux/Windows: CPU-индекс исключает CUDA-библиотеки; на macOS
    достаточно pip install -r requirements-release.txt.)
@@ -128,11 +129,14 @@ def build(optional_deps: list[str]) -> None:
         "--windowed",    # GUI-приложение — без консольного окна
         "--name",
         APP_NAME,
+        "--distpath", str(DIST_DIR),
+        "--workpath", str(BUILD_DIR),
+        "--specpath", str(BUILD_DIR),
         # Словарь — read-only копия в корне бандля (_MEIPASS/dictionary.json).
         "--add-data",
-        f"dictionary.json{sep}.",
+        f"{ROOT / 'dictionary.json'}{sep}.",
         "--add-data",
-        f"assets{sep}assets",
+        f"{ROOT / 'assets'}{sep}assets",
         # Данные/бинарники/сабмодули библиотек (нативные расширения, темы, .so).
         "--collect-all",
         "customtkinter",
@@ -146,6 +150,9 @@ def build(optional_deps: list[str]) -> None:
         "sentencepiece",
         "--hidden-import",
         "sacremoses",
+        # Pillow ImageTk loads this module dynamically when initializing Tk.
+        "--hidden-import",
+        "PIL._tkinter_finder",
         "--clean",
         "--noconfirm",
         "--log-level",
@@ -163,7 +170,7 @@ def build(optional_deps: list[str]) -> None:
     for dep in optional_deps:
         if dep != "llama_cpp":
             args += ["--collect-all", dep]
-    args.append(ENTRY)
+    args.append(str(ROOT / ENTRY))
 
     print("Running PyInstaller ...")
     print("  " + " ".join(args))

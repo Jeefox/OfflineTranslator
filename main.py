@@ -59,7 +59,7 @@ class _StaleTranslation(Exception):
     и не публикует результатов (проверка делается на каждом предложении)."""
 
 class TranslatorApp(ctk.CTk):
-    def __init__(self):
+    def __init__(self, *, start_services=True):
         super().__init__()
 
         self._single_instance = _SingleInstance()
@@ -199,13 +199,17 @@ class TranslatorApp(ctk.CTk):
         self._tray = SystemTray(self, self._show_from_tray, self._quit_app)
         self._notification_after_translation = False
         self._notification_text = None
+        self._agent_truncated_text = None
+        self._agent_truncation_warning = None
         self._pending_agent_text = None
+        self._load_seq = 0
 
         self.setup_ui()
         self._bind_hotkeys()
-        self._start_hotkey_agent()
-        if not self._tray.start():
-            logger.warning("Системный трей недоступен")
+        if start_services:
+            self._start_hotkey_agent()
+            if not self._tray.start():
+                logger.warning("Системный трей недоступен")
 
         # Начинаем опрос очереди в главном потоке.
         self._process_gui_queue()
@@ -213,7 +217,8 @@ class TranslatorApp(ctk.CTk):
         # Запускаем загрузку выбранной модели в фоне (Этап 10): все
         # виджеты уже созданы, и сам поток не обращается к GUI (только к
         # self.translator и очереди).
-        self._start_model_load()
+        if start_services:
+            self._start_model_load()
 
         # При закрытии окна остановим глобальный агент хоткея.
         self.protocol("WM_DELETE_WINDOW", self._on_window_close)
@@ -588,6 +593,9 @@ class TranslatorApp(ctk.CTk):
         self._gui_queue.put(("translation_done", generation, result))
 
     def _send_translation_notification(self, result, generation):
+        if not self.settings.get("notifications_enabled"):
+            self._gui_queue.put(("notification_done", generation, False))
+            return
         try:
             shown = show_notification("Перевод готов", result,
                                       self.settings.get("notification_duration_sec", 5))
@@ -734,8 +742,14 @@ class TranslatorApp(ctk.CTk):
                     and completed_text == self._notification_text):
                 self._notification_after_translation = False
                 self._notification_text = None
-                threading.Thread(target=self._send_translation_notification,
-                                 args=(result, generation), daemon=True).start()
+                if self.settings.get("notifications_enabled"):
+                    warning = getattr(self, "_agent_truncation_warning", None)
+                    message = (result + "\n\n" + warning
+                               if warning and completed_text == self._agent_truncated_text else result)
+                    threading.Thread(target=self._send_translation_notification,
+                                     args=(message, generation), daemon=True).start()
+                elif self.state() == "withdrawn":
+                    self._show_from_tray()
             # После завершения: коалесированный запрос (если текст не изменился).
             self._continue_pending_translation()
         elif kind == "notification_done":
@@ -813,7 +827,9 @@ class TranslatorApp(ctk.CTk):
         # ожидающий автоперевод»). Программное удаление не порождает
         # <<Modified>> — самого действия очистки новый перевод не запускает.
         self._cancel_auto()
+        self._clear_agent_warning()
         self._pending_text = None
+        self._pending_agent_text = None
         self._notification_after_translation = False
         self._notification_text = None
         self.input_text.delete("1.0", "end")
@@ -850,7 +866,9 @@ class TranslatorApp(ctk.CTk):
         # запланируем ровно один новый (программный insert не порождает
         # <<Modified>>, поэтому рекурсивных/двойных событий нет).
         self._cancel_auto()
+        self._clear_agent_warning()
         self._pending_text = None
+        self._pending_agent_text = None
         self._notification_after_translation = False
         self._notification_text = None
 
@@ -896,11 +914,23 @@ class TranslatorApp(ctk.CTk):
             self._clear_status_after = None
         if text is None:
             text = READY_TEXT
+        warning = getattr(self, "_agent_truncation_warning", None)
+        if (warning and self.input_text.get("1.0", "end-1c") == self._agent_truncated_text
+                and not text.endswith(warning)):
+            text += " " + warning
         color = {"ready": self._pal["success"],
                  "busy": self._pal["pending"],
                  "error": self._pal["error"]}.get(kind, self._pal["pending"])
         self._status = (kind, text)
         self.status_label.configure(text=text, text_color=color)
+
+    def _clear_agent_warning(self):
+        warning = getattr(self, "_agent_truncation_warning", None)
+        self._agent_truncated_text = None
+        self._agent_truncation_warning = None
+        if warning:
+            kind, text = self._status
+            self._set_status(kind, text.removesuffix(" " + warning))
 
     # ------------------------------------------------------------------ #
     #  Модель: отображение и применение (Этап 10)                        #
@@ -960,7 +990,9 @@ class TranslatorApp(ctk.CTk):
         направлении выдаёт явную ошибку, поэтому смена обязательна.
         """
         self._cancel_auto()
+        self._clear_agent_warning()
         self._pending_text = None
+        self._pending_agent_text = None
         self._notification_after_translation = False
         self._notification_text = None
         self._translation_generation += 1
@@ -1610,6 +1642,9 @@ class TranslatorApp(ctk.CTk):
             self.input_text.edit_modified(False)
         except tk.TclError:
             pass
+        if (self._agent_truncated_text is not None
+                and self.input_text.get("1.0", "end-1c") != self._agent_truncated_text):
+            self._clear_agent_warning()
         if not self.input_text.get("1.0", "end-1c").strip():
             # Пустой исходный текст (пользователь удалил всё): текущий
             # перевод останавливаем (поколение устарело — старый worker
@@ -1804,6 +1839,7 @@ class TranslatorApp(ctk.CTk):
         """Нажат глобальный хоткей: перехваченный текст ставим в исходное
         поле, при необходимости переопределяем направление и переводим."""
         limit = int(self.settings.get("max_text_length") or 0)
+        original_length = len(text)
         if limit and len(text) > limit:
             text = text[:limit]
         if not text:
@@ -1819,6 +1855,10 @@ class TranslatorApp(ctk.CTk):
         self._cancel_auto()
         self.input_text.delete("1.0", "end")
         self.input_text.insert("1.0", text)
+        self._agent_truncated_text = text if original_length > len(text) else None
+        self._agent_truncation_warning = (
+            f"Текст сокращён: первые {len(text)} из {original_length} символов."
+            if self._agent_truncated_text is not None else None)
         # Переводим сразу (без debounce), а результат после завершения
         # показываем системным уведомлением — окно может оставаться в трее.
         self._notification_after_translation = True
@@ -1827,6 +1867,7 @@ class TranslatorApp(ctk.CTk):
             # Смена направления могла запустить загрузку другой модели.
             # Запрос будет выполнен после init_done.
             self._pending_agent_text = text
+            self._set_status("busy", "Ожидание загрузки модели…")
         else:
             self.start_translation()
 
@@ -1858,6 +1899,9 @@ class TranslatorApp(ctk.CTk):
         self.focus_force()
 
     def _quit_app(self):
+        # Stop active inference at its next cancellation checkpoint, including
+        # remaining chunks of a long sentence after the GUI has been destroyed.
+        self._translation_generation += 1
         self._load_seq += 1
         if hasattr(self, "_model_loader"):
             self._model_loader.close()
@@ -1879,5 +1923,16 @@ from settings_dialog import (SettingsDialog, _LANG_LABELS, _LANG_FROM_LABEL,
                              _HK_MODIFIER_KEYS, _HK_MODIFIER_NAMES, _HK_IGNORE_KEYS)
 
 if __name__ == "__main__":
-    app = TranslatorApp()
-    app.mainloop()
+    if "--translation-smoke" in sys.argv:
+        if len(sys.argv) != 4 or sys.argv[1] != "--translation-smoke":
+            raise SystemExit("Usage: OfflineTranslator --translation-smoke REPORT.json MODEL_ROOT")
+        from scripts.gui_smoke import run_smoke
+        raise SystemExit(run_smoke(TranslatorApp, sys.argv[2], model_root=sys.argv[3]))
+    elif "--smoke-test" in sys.argv:
+        if len(sys.argv) != 3 or sys.argv[1] != "--smoke-test":
+            raise SystemExit("Usage: OfflineTranslator --smoke-test REPORT.json")
+        from scripts.gui_smoke import run_smoke
+        raise SystemExit(run_smoke(TranslatorApp, sys.argv[2]))
+    else:
+        app = TranslatorApp()
+        app.mainloop()

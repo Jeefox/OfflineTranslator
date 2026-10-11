@@ -1,0 +1,2 @@
+# Security tooling only; not an application runtime dependency.
+pip-audit==2.10.1

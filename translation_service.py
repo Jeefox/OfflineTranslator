@@ -29,7 +29,8 @@ split_sentence_to_chunks получает счётчик токенов (count_t
 абзацы и события стрима от кэша не зависят.
 """
 import dataclasses
-from concurrent.futures import Future, TimeoutError as FutureTimeoutError
+from concurrent.futures import (Future, TimeoutError as FutureTimeoutError,
+                                CancelledError as FutureCancelledError)
 import re
 from threading import Event, RLock
 from typing import Callable, Optional
@@ -262,10 +263,12 @@ class TranslationService:
                         future.exception(timeout=0.05)
                     except FutureTimeoutError:
                         pass
+                    except FutureCancelledError:
+                        break
                 _check_cancelled(cancellation_token)
                 try:
                     return future.result()
-                except TranslationCancelled:
+                except (TranslationCancelled, FutureCancelledError):
                     # A cancelled producer must not cancel an independent consumer.
                     _check_cancelled(cancellation_token)
                     continue
@@ -275,6 +278,14 @@ class TranslationService:
                     _check_cancelled(cancellation_token)
                     acquired = self._inference_lock.acquire(timeout=0.05)
                 result = self._translate_unit_once(sentence, direction, cancellation_token)
+            except TranslationCancelled:
+                # Storing its traceback in Future creates a cycle retaining the
+                # runtime/model until GC. Cancel the flight without an exception;
+                # independent waiters still retry with their own token.
+                with self._flight_lock:
+                    self._flights.pop(key, None)
+                    future.cancel()
+                raise
             except BaseException as exc:
                 with self._flight_lock:
                     self._flights.pop(key, None)
