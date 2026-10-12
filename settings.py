@@ -3,7 +3,8 @@
 
 Механизм перенесён из старой версии (origin/master:settings.py) и переиспользует
 пользовательскую директорию проекта (dictionary_manager.user_data_dir):
-  Linux/macOS — ~/.cache/OfflineTranslator/settings.json
+  Linux — $XDG_DATA_HOME/OfflineTranslator/settings.json (~/.local/share по умолчанию)
+  macOS — ~/Library/Application Support/OfflineTranslator/settings.json
   Windows     — %LOCALAPPDATA%/OfflineTranslator/settings.json
 Путь можно переопределить переменной окружения OFFLINE_TRANSLATE_CONFIG
 (абсолютный путь к файлу или каталогу) — удобно для тестов.
@@ -42,6 +43,7 @@ DEFAULTS: dict = {
     "autotranslate": True,          # автоперевод после остановки набора
     "slow_after_sec": 3,            # задержка статуса «Перевод...» (0 — сразу)
     "notification_duration_sec": 5, # время жизни уведомления с переводом
+    "notifications_enabled": True,
     "debounce_sec": 1.5,            # debounce ввода (сек.)
     "max_text_length": 5000,        # лимит символов (0 = без лимита)
     "filter_cyrillic": True,        # автоопределение направления по написанию
@@ -160,7 +162,7 @@ def validate_value(key: str, value) -> tuple[bool, object]:
         if not isinstance(value, str) or value.lower() not in _ALLOWED[key]:
             return False, DEFAULTS[key]
         return True, value.lower()
-    if key in ("autotranslate", "filter_cyrillic"):
+    if key in ("autotranslate", "filter_cyrillic", "notifications_enabled"):
         if not isinstance(value, bool):
             return False, DEFAULTS[key]
         return True, value
@@ -206,6 +208,7 @@ class Settings:
     def __init__(self, path: str | Path | None = None):
         self.path: Path = Path(path) if path else _default_config_path()
         self._data: dict = {**DEFAULTS}
+        self._recovery_blocked = False
         self._load()
 
     # ------------------------------------------------------------------ #
@@ -222,6 +225,18 @@ class Settings:
         except (OSError, ValueError) as exc:
             logger.warning("Не удалось прочитать %s (%s) — использую дефолты", self.path, exc)
             self._data = {**DEFAULTS}
+            try:
+                # Preserve original bytes (including malformed encoding).
+                original = self.path.read_bytes()
+                with tempfile.NamedTemporaryFile(dir=self.path.parent,
+                        prefix=self.path.name + ".corrupt-", suffix=".bak", delete=False) as backup:
+                    backup.write(original)
+                    backup.flush()
+                    os.fsync(backup.fileno())
+            except OSError:
+                self._recovery_blocked = True
+                logger.exception("Не удалось сохранить исходные настройки; файл не будет перезаписан")
+                return
             self.save()
             return
         for key, value in raw.items():
@@ -242,9 +257,12 @@ class Settings:
             self._data["target_lang"] = DEFAULTS["target_lang"]
 
     def save(self) -> bool:
+        if self._recovery_blocked:
+            logger.error("Сохранение заблокировано: исходный файл настроек не удалось сохранить в backup")
+            return False
         temporary = None
         try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
             with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8",
                     prefix=".settings-", suffix=".tmp", dir=self.path.parent,
                     delete=False) as output:

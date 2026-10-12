@@ -71,19 +71,9 @@ def orient_pair(key: str, value: str) -> Tuple[str, str]:
 # ---------------------------------------------------------------------------
 
 def user_data_dir() -> str:
-    """Постоянная user-директория приложения (единый источник истины для
-    путей данных приложения; используется CacheManager
-    (backends/marian.py), default_dictionary_path и model_cache_dir):
-    - Windows: %LOCALAPPDATA%\\OfflineTranslator;
-    - Linux/macOS: $XDG_CACHE_HOME/OfflineTranslator
-      (или ~/.cache/OfflineTranslator, если переменная не задана).
-    """
-    if sys.platform == "win32":
-        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
-    else:
-        base = (os.environ.get("XDG_CACHE_HOME")
-                or os.path.join(os.path.expanduser("~"), ".cache"))
-    return os.path.join(base, "OfflineTranslator")
+    """Persistent data with non-destructive migration from the legacy cache."""
+    from user_paths import user_data_dir as resolve
+    return resolve()
 
 
 def model_cache_dir() -> str:
@@ -100,7 +90,8 @@ def model_cache_dir() -> str:
     загрузки). Функция каталог не создаёт — создаёт его по требованию
     CacheManager при загрузке.
     """
-    return os.path.join(user_data_dir(), "cache")
+    from user_paths import model_cache_dir as resolve
+    return resolve()
 
 
 def default_dictionary_path() -> str:
@@ -125,7 +116,7 @@ def default_dictionary_path() -> str:
             bundled = os.path.join(meipass, "dictionary.json")
             if os.path.exists(bundled):
                 try:
-                    os.makedirs(os.path.dirname(path), exist_ok=True)
+                    os.makedirs(os.path.dirname(path), exist_ok=True, mode=0o700)
                     shutil.copy2(bundled, path)
                 except Exception as e:
                     print(f"⚠ Не удалось скопировать словарь из бандла EXE: {e}")

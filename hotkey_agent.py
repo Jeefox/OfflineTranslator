@@ -10,8 +10,8 @@
 Отличия от старой версии (адаптация к текущей архитектуре):
 - результат передаётся главному окну; после завершения перевода GUI показывает
   системное уведомление, а окно может оставаться в трее;
-- pyperclip/plyer не используются: буфер читается через xclip/xsel на Linux
-  и через ctypes (stdlib) на Windows;
+- pyperclip/plyer не используются: буфер читается через xclip/xsel на Linux,
+  pbpaste на macOS и ctypes (stdlib) на Windows;
 - pynput опционален: без него (или когда backend недоступен — Wayland, нет
   X, нет python3-xlib) агент просто не запускается, а само приложение
   работает как обычно (импорт модуля никогда не падает).
@@ -75,6 +75,17 @@ def _read_windows_clipboard() -> str:
         kernel32 = ctypes.windll.kernel32
     except AttributeError:  # не Windows
         return ""
+    # WinAPI HANDLEs and pointers must not use ctypes' default C int return.
+    user32.OpenClipboard.argtypes = [ctypes.c_void_p]
+    user32.OpenClipboard.restype = ctypes.c_int
+    user32.GetClipboardData.argtypes = [ctypes.c_uint]
+    user32.GetClipboardData.restype = ctypes.c_void_p
+    user32.CloseClipboard.argtypes = []
+    user32.CloseClipboard.restype = ctypes.c_int
+    kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
+    kernel32.GlobalLock.restype = ctypes.c_void_p
+    kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+    kernel32.GlobalUnlock.restype = ctypes.c_int
     CF_UNICODE_TEXT = 13
     if not user32.OpenClipboard(None):
         return ""
@@ -101,7 +112,8 @@ def read_clipboard_text() -> str:
         except Exception:  # noqa: BLE001
             logger.exception("Не удалось прочитать буфер Windows")
             return ""
-
+    if platform.system() == "Darwin":
+        return _read_clipboard_with(["pbpaste"]) or ""
 
     for cmds in (_PRIMARY_CMDS, _CLIPBOARD_CMDS):
         for cmd in cmds:

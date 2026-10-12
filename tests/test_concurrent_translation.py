@@ -3,6 +3,8 @@ from concurrent.futures import ThreadPoolExecutor, Future
 from pathlib import Path
 import sys
 import threading
+import gc
+import weakref
 import unittest
 from unittest.mock import patch
 
@@ -30,6 +32,34 @@ class BlockingBackend:
 
 
 class ConcurrentTests(unittest.TestCase):
+    def test_cancelled_owner_does_not_retain_runtime_until_gc(self):
+        def cancelled_runtime():
+            token = service.CancellationToken()
+            class Backend:
+                def load(self): pass
+                def split_sentence(self, text, direction): return [text]
+                def translate_chunk(self, text, direction):
+                    token.cancel()
+                    return text.upper()
+            translator = service.TranslationService(Backend(), snapshot_loader=lambda _: None)
+            reference = weakref.ref(translator)
+            try:
+                translator.translate("cancel this unit", cancellation_token=token)
+            except service.TranslationCancelled:
+                pass
+            else:
+                self.fail("Cancellation not observed")
+            return reference
+        enabled = gc.isenabled()
+        gc.disable()
+        try:
+            reference = cancelled_runtime()
+            self.assertIsNone(reference(), "cancelled Future retains runtime through exception traceback")
+        finally:
+            if enabled:
+                gc.enable()
+            gc.collect()
+
     def test_shared_success_failure_and_cancellation(self):
         for scenario in ("uncached_success", "failure", "cancel_waiter", "cancel_owner"):
             with self.subTest(scenario=scenario):

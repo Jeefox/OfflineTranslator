@@ -14,7 +14,7 @@ from scripts.download_release_models import prepare_release_model
 from scripts.package_release_models import package_models
 from packaging.version import Version
 
-assert Version(torch.__version__.split("+")[0]) >= Version("2.10.0")
+assert Version(torch.__version__.split("+")[0]) >= Version("2.13.0")
 with tempfile.TemporaryDirectory() as folder:
     root = Path(folder)
     (root / "config.json").write_text('{"model_type":"marian"}')
@@ -55,14 +55,15 @@ with tempfile.TemporaryDirectory() as folder:
         else:
             raise AssertionError("Converter accepted arbitrary source")
         download.assert_not_called()
-    with patch.object(torch, "__version__", "2.9.1"), \
-            patch("scripts.download_release_models.snapshot_download") as download:
-        try:
-            prepare_release_model("Helsinki-NLP/opus-mt-en-ru", root)
-        except RuntimeError:
-            pass
-        else:
-            raise AssertionError("Converter accepted vulnerable runtime")
-        download.assert_not_called()
+    for vulnerable in ("2.9.1", "2.10.0+cpu", "2.12.1"):
+        with patch.object(torch, "__version__", vulnerable), \
+                patch("scripts.download_release_models.snapshot_download") as download:
+            try:
+                prepare_release_model("Helsinki-NLP/opus-mt-en-ru", root)
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError("Converter accepted vulnerable runtime: " + vulnerable)
+            download.assert_not_called()
 configure_paths()
 print("OK: safetensors-only policy and real Marian inference on", torch.__version__)

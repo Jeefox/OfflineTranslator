@@ -1,5 +1,6 @@
 # Release runtime pins; GGUF is an explicit separate build.
 -r requirements.txt
+-r requirements-build-tools.txt
 pyinstaller==6.22.3
 pyinstaller-hooks-contrib==2026.8
 huggingface-hub==1.32.0

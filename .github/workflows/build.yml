@@ -27,8 +27,12 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - uses: ./.github/actions/linux-gui-prerequisites
-      - run: python -m pip install "torch==2.10.0" --index-url https://download.pytorch.org/whl/cpu
+      - run: python -m pip install -r requirements-build-tools.txt
+      - run: python -m pip install "torch==2.13.0" --index-url https://download.pytorch.org/whl/cpu
       - run: python -m pip install -r requirements-release.txt
+      - run: python -m pip install -r requirements-audit.txt
+      - name: Audit installed release dependencies
+        run: python -m pip_audit --vulnerability-service osv
       - run: xvfb-run -a python scripts/run_tests.py
 
   build-smoke:
@@ -47,17 +51,17 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
       - uses: ./.github/actions/linux-gui-prerequisites
         if: runner.os == 'Linux'
-      - run: python -m pip install "torch==2.10.0" --index-url https://download.pytorch.org/whl/cpu
+      - run: python -m pip install -r requirements-build-tools.txt
+      - run: python -m pip install "torch==2.13.0" --index-url https://download.pytorch.org/whl/cpu
       - run: python -m pip install -r requirements-release.txt
       - name: Build executable without model weights
         run: python build.py
-      - name: Verify executable
-        shell: python
-        run: |
-          from pathlib import Path
-          import sys
-          executable = Path('dist') / ('OfflineTranslator.exe' if sys.platform == 'win32' else 'OfflineTranslator')
-          assert executable.is_file() and executable.stat().st_size > 0
+      - name: Run Linux executable GUI smoke
+        if: runner.os == 'Linux'
+        run: xvfb-run -a python scripts/check_executable.py dist/OfflineTranslator
+      - name: Run Windows executable GUI smoke
+        if: runner.os == 'Windows'
+        run: python scripts/check_executable.py dist/OfflineTranslator.exe
 
   build:
     if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
@@ -81,14 +85,27 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
       - uses: ./.github/actions/linux-gui-prerequisites
         if: runner.os == 'Linux'
+      - name: Install patched build tools
+        run: python -m pip install -r requirements-build-tools.txt
       - name: Install CPU runtime
         if: runner.os != 'macOS'
-        run: python -m pip install "torch==2.10.0" --index-url https://download.pytorch.org/whl/cpu
+        run: python -m pip install "torch==2.13.0" --index-url https://download.pytorch.org/whl/cpu
       - name: Install dependencies
         run: |
           python -m pip install -r requirements-release.txt
       - name: Build executable without model weights
         run: python build.py
+      - name: Record resolved build dependencies and SBOM
+        run: python scripts/build_manifest.py . ${{ matrix.platform }}
+      - name: Run Linux executable GUI smoke
+        if: runner.os == 'Linux'
+        run: xvfb-run -a python scripts/check_executable.py dist/OfflineTranslator
+      - name: Run Windows executable GUI smoke
+        if: runner.os == 'Windows'
+        run: python scripts/check_executable.py dist/OfflineTranslator.exe
+      - name: Run macOS executable GUI smoke
+        if: runner.os == 'macOS'
+        run: python scripts/check_executable.py dist/OfflineTranslator
       - name: Archive Windows executable
         if: runner.os == 'Windows'
         shell: pwsh
@@ -108,6 +125,9 @@ jobs:
           path: |
             OfflineTranslator-*.zip*
             OfflineTranslator-*.tar.gz*
+            OfflineTranslator-*.sbom.cdx.json
+            OfflineTranslator-*.resolved.txt
+            OfflineTranslator-*.build-environment.json
           if-no-files-found: error
           retention-days: 30
 
@@ -121,18 +141,30 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - uses: ./.github/actions/linux-gui-prerequisites
-      - run: python -m pip install "torch==2.10.0" --index-url https://download.pytorch.org/whl/cpu
+      - run: python -m pip install -r requirements-build-tools.txt
+      - run: python -m pip install "torch==2.13.0" --index-url https://download.pytorch.org/whl/cpu
       - run: python -m pip install -r requirements-release.txt -r requirements-gguf.txt
+      - run: python -m pip install -r requirements-audit.txt
+      - name: Audit GGUF dependencies with documented disk-cache exception
+        # No fixed diskcache release exists; LlamaDiskCache is not enabled.
+        # See SECURITY.md. Other advisories still fail the build.
+        run: python -m pip_audit --vulnerability-service osv --ignore-vuln GHSA-w8v5-vhqr-4h9v
       - run: python -c "import llama_cpp; print(llama_cpp.__version__)"
       - run: python tests/test_llama_cpp_backend.py
       - run: python build.py
         env:
           OFFLINE_TRANSLATOR_BUILD_GGUF: "1"
+      - run: python scripts/build_manifest.py . Linux-GGUF
+      - run: xvfb-run -a python scripts/check_executable.py dist/OfflineTranslator
       - run: tar -czf OfflineTranslator-Linux-GGUF.tar.gz -C dist OfflineTranslator
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: OfflineTranslator-Linux-GGUF
-          path: OfflineTranslator-Linux-GGUF.tar.gz
+          path: |
+            OfflineTranslator-Linux-GGUF.tar.gz
+            OfflineTranslator-Linux-GGUF.sbom.cdx.json
+            OfflineTranslator-Linux-GGUF.resolved.txt
+            OfflineTranslator-Linux-GGUF.build-environment.json
 
   models:
     if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
@@ -143,8 +175,10 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install patched build tools
+        run: python -m pip install -r requirements-build-tools.txt
       - name: Install CPU runtime for model conversion
-        run: python -m pip install "torch==2.10.0" --index-url https://download.pytorch.org/whl/cpu
+        run: python -m pip install "torch==2.13.0" --index-url https://download.pytorch.org/whl/cpu
       - name: Install pinned model packaging dependencies
         run: python -m pip install -r requirements-release.txt
       - name: Download and package models
@@ -169,6 +203,7 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: release-assets
@@ -182,19 +217,4 @@ jobs:
           fail_on_unmatched_files: true
           generate_release_notes: true
           files: release-assets/*
-          body: |
-            Приложение и модели скачиваются отдельно.
-
-            1. Скачайте и распакуйте архив приложения для своей ОС.
-            2. Для стандартного Marian-перевода скачайте OfflineTranslator-Models-Marian.zip
-               и распакуйте папку models рядом с исполняемым файлом.
-            3. Если у вас уже есть модели, архив моделей скачивать не нужно:
-               укажите папки совместимых Marian-моделей или GGUF Hy-MT2 в Настройках.
-
-            Исполняемые файлы не содержат весов и не скачивают модели при запуске.
-            Для EN→RU и RU→EN можно подключить модели независимо.
-            Произвольные архитектуры GGUF/Transformers не поддерживаются.
-
-            SHA256SUMS.txt содержит контрольные суммы архивов.
-            Если архив превышает лимит GitHub, скачайте все его части .001, .002, …
-            и объедините их перед распаковкой (cat на Unix, copy /b на Windows).
+          body_path: .github/RELEASE_GUIDE.md

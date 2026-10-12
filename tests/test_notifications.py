@@ -11,6 +11,14 @@ import notifications
 
 
 class NotificationTests(unittest.TestCase):
+    def test_linux_user_text_cannot_be_an_option(self):
+        with patch.object(notifications.platform, "system", return_value="Linux"), \
+                patch.object(notifications.shutil, "which", return_value="/bin/notify-send"), \
+                patch.object(notifications.subprocess, "run", return_value=SimpleNamespace(returncode=0)) as run:
+            self.assertTrue(notifications.show_notification("--version", "--help"))
+            self.assertEqual(run.call_args.args[0],
+                             ["notify-send", "-t", "5000", "--", "--version", "--help"])
+
     def test_completion_status_on_linux_and_macos(self):
         for system in ("Linux", "Darwin"):
             for code in (0, 1):

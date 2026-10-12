@@ -29,8 +29,8 @@ def prepare_release_model(repo_id, cache_dir):
         raise ValueError("Only pinned official Helsinki models can be converted")
     import torch
     from packaging.version import Version
-    if Version(torch.__version__.split("+")[0]) < Version("2.10.0"):
-        raise RuntimeError("Conversion requires PyTorch >= 2.10.0 (GHSA-63cw-57p8-fm3p)")
+    if Version(torch.__version__.split("+")[0]) < Version("2.13.0"):
+        raise RuntimeError("Conversion requires PyTorch >= 2.13.0 (GHSA-63cw-57p8-fm3p, GHSA-rrmf-rvhw-rf47)")
     from transformers import AutoModelForSeq2SeqLM
     revision = MODEL_REVISIONS[repo_id]
     root = Path(cache_dir) / ("models--" + repo_id.replace("/", "--"))

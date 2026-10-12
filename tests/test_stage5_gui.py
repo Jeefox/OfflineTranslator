@@ -207,8 +207,12 @@ check("настройки: поле глобального хоткея суще
 # Этап 10: добавлено меню выбора модели -> тема + 2 языка + модель.
 check("настройки: меню существуют (тема + 2 языка + модель)",
       len(options) == 4, options)
-check("настройки: переключатели существуют (автоперевод + направление)",
-      len(switches) == 2, switches)
+check("настройки: переключатели автоперевода, уведомлений и направления",
+      len(switches) == 3
+      and {str(w.cget("variable")) for w in switches}
+      == {str(dlg.autotranslate_var), str(dlg.notifications_var), str(dlg.filter_var)}, switches)
+check("настройки: уведомления сохраняют текущее значение",
+      bool(dlg.notifications_var.get()) == app.settings.get("notifications_enabled"))
 check("настройки: подписи существуют (>= 9 строк)", len(labels) >= 9, labels)
 check("настройки: кнопки Отмена/Сохранить существуют",
       dlg.cancel_btn.winfo_exists() and dlg.save_btn.winfo_exists())

@@ -1,3 +1,5 @@
 # Дополнительный runtime для локальной GGUF-модели Hy-MT2.
 -r requirements.txt
 llama-cpp-python==0.3.36
+# Unfixed pickle advisory; disk cache is not enabled. See SECURITY.md.
+diskcache==5.6.3

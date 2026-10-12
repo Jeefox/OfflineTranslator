@@ -2,7 +2,9 @@
 import hashlib
 import os
 from pathlib import Path
-from dictionary_manager import user_data_dir
+# Keep the lock at its legacy location so an older running version still
+# prevents a second instance while persistent data is being migrated.
+from user_paths import legacy_data_dir as user_data_dir
 
 
 class SingleInstanceGuard:

@@ -30,7 +30,7 @@ def show_notification(title: str, message: str, duration_sec: float = 5) -> bool
     try:
         system = platform.system()
         if system == "Linux" and shutil.which("notify-send"):
-            return _send_command(["notify-send", "-t", str(timeout_ms), title, message])
+            return _send_command(["notify-send", "-t", str(timeout_ms), "--", title, message])
         if system == "Darwin":
             # osascript не позволяет надёжно задать timeout, но системное
             # уведомление всё равно отображается по политике macOS.
